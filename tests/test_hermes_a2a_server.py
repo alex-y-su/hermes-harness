@@ -89,7 +89,7 @@ def test_sendmessage_requires_bearer_auth(tmp_path: Path) -> None:
         server.server_close()
 
 
-def test_sendmessage_returns_native_task_wrapper_and_strips_api_env(tmp_path: Path, monkeypatch) -> None:
+def test_message_send_returns_native_task_and_strips_api_env(tmp_path: Path, monkeypatch) -> None:
     hermes = tmp_path / "hermes"
     env_dump = tmp_path / "env.json"
     hermes.write_text(
@@ -121,7 +121,7 @@ def test_sendmessage_returns_native_task_wrapper_and_strips_api_env(tmp_path: Pa
         result = _rpc(
             f"http://127.0.0.1:{server.server_port}",
             "secret-token",
-            "SendMessage",
+            "message/send",
             {
                 "message": {
                     "taskId": "task-native",
@@ -131,12 +131,30 @@ def test_sendmessage_returns_native_task_wrapper_and_strips_api_env(tmp_path: Pa
             },
         )
 
-        task = result["result"]["task"]
+        task = result["result"]
         assert task["id"] == "task-native"
         assert task["contextId"] == "ctx-1"
         assert task["status"]["state"] == "completed"
         assert task["artifacts"][0]["parts"][0]["text"] == "fake hermes response"
         assert all(value is None for value in json.loads(env_dump.read_text(encoding="utf-8")).values())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sendmessage_alias_keeps_legacy_task_wrapper(tmp_path: Path) -> None:
+    server, url, token = _start_server(tmp_path)
+    try:
+        result = _rpc(
+            url,
+            token,
+            "SendMessage",
+            {"message": {"taskId": "alias-id", "parts": [{"kind": "text", "text": "hello alias"}]}},
+        )
+
+        assert result["result"]["task"]["id"] == "alias-id"
+        assert result["result"]["task"]["status"]["state"] == "completed"
+        assert result["result"]["task"]["artifacts"][0]["parts"][0]["text"].startswith("fake hermes response")
     finally:
         server.shutdown()
         server.server_close()

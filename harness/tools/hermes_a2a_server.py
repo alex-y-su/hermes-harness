@@ -118,7 +118,7 @@ class HermesA2ARuntime:
             ],
         }
 
-    def send_message(self, params: dict[str, Any], *, native: bool) -> dict[str, Any]:
+    def send_message(self, params: dict[str, Any], *, native: bool, wrapped: bool = False) -> dict[str, Any]:
         message = params.get("message") if isinstance(params.get("message"), dict) else {}
         text = _message_text(message)
         task_id = _task_id(params, message)
@@ -129,22 +129,22 @@ class HermesA2ARuntime:
             answer = self._run_hermes(text)
             task = _task_result(task_id, "completed", answer, native=native, context_id=context_id)
             self.tasks[task_id] = task
-            return {"task": task} if native else task
+            return {"task": task} if wrapped else task
         except Exception as exc:
             task = _task_result(task_id, "failed", str(exc), native=native, context_id=context_id)
             self.tasks[task_id] = task
-            return {"task": task} if native else task
+            return {"task": task} if wrapped else task
 
-    def get_task(self, params: dict[str, Any], *, native: bool) -> dict[str, Any]:
+    def get_task(self, params: dict[str, Any], *, native: bool, wrapped: bool = False) -> dict[str, Any]:
         task_id = str(params.get("id") or params.get("taskId") or "")
         task = self.tasks.get(task_id) or _task_result(task_id, "unknown", native=native)
-        return {"task": task} if native else task
+        return {"task": task} if wrapped else task
 
-    def cancel_task(self, params: dict[str, Any], *, native: bool) -> dict[str, Any]:
+    def cancel_task(self, params: dict[str, Any], *, native: bool, wrapped: bool = False) -> dict[str, Any]:
         task_id = str(params.get("id") or params.get("taskId") or "")
         task = _task_result(task_id, "canceled", native=native)
         self.tasks[task_id] = task
-        return {"task": task} if native else task
+        return {"task": task} if wrapped else task
 
     def _run_hermes(self, prompt: str) -> str:
         if not prompt:
@@ -207,11 +207,15 @@ def build_handler(runtime: HermesA2ARuntime) -> type[BaseHTTPRequestHandler]:
                 method = str(body.get("method") or "")
                 params = body.get("params") if isinstance(body.get("params"), dict) else {}
                 if method in {"SendMessage", "message/send", "tasks/send", "task/send"}:
-                    result = runtime.send_message(params, native=method in {"SendMessage", "message/send"})
+                    result = runtime.send_message(
+                        params,
+                        native=method in {"SendMessage", "message/send"},
+                        wrapped=method == "SendMessage",
+                    )
                 elif method in {"GetTask", "tasks/get", "task/get"}:
-                    result = runtime.get_task(params, native=method == "GetTask")
+                    result = runtime.get_task(params, native=method == "GetTask", wrapped=method == "GetTask")
                 elif method in {"CancelTask", "tasks/cancel", "task/cancel"}:
-                    result = runtime.cancel_task(params, native=method == "CancelTask")
+                    result = runtime.cancel_task(params, native=method == "CancelTask", wrapped=method == "CancelTask")
                 else:
                     self._send_json(200, {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32601, "message": "method not found"}})
                     return
