@@ -160,6 +160,39 @@ def test_sendmessage_alias_keeps_legacy_task_wrapper(tmp_path: Path) -> None:
         server.server_close()
 
 
+def test_boss_a2a_context_is_prepended_to_hermes_prompt(tmp_path: Path) -> None:
+    hermes = tmp_path / "hermes"
+    prompt_dump = tmp_path / "prompt.txt"
+    hermes.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "prompt = sys.argv[sys.argv.index('-z') + 1]\n"
+        f"pathlib.Path({str(prompt_dump)!r}).write_text(prompt, encoding='utf-8')\n"
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+    hermes.chmod(hermes.stat().st_mode | stat.S_IXUSR)
+    runtime = HermesA2ARuntime(
+        profile="boss",
+        host="127.0.0.1",
+        port=0,
+        token="secret-token",
+        hermes_bin=str(hermes),
+        model="test-model",
+        timeout_seconds=10,
+    )
+
+    runtime.send_message(
+        {"message": {"taskId": "ctx-id", "parts": [{"kind": "text", "text": "how many ppl in your team?"}]}},
+        native=True,
+    )
+
+    prompt = prompt_dump.read_text(encoding="utf-8")
+    assert "public Hermes Harness boss A2A endpoint" in prompt
+    assert "exactly six profiles: boss, supervisor, hr, conductor, critic, and a2a-bridge" in prompt
+    assert "how many ppl in your team?" in prompt
+
+
 def test_tasks_send_legacy_shape_is_supported(tmp_path: Path) -> None:
     server, url, token = _start_server(tmp_path)
     try:

@@ -28,7 +28,12 @@ def test_install_and_verify_local_boss_team(tmp_path: Path) -> None:
     assert (home_root / ".hermes-a2a-bridge" / "config.yaml").read_text(encoding="utf-8").find(
         "runtime: daemon"
     ) != -1
-    assert "Jesuscord" not in (home_root / ".hermes-boss" / "TEAM_SOUL.md").read_text(encoding="utf-8")
+    boss_soul = (home_root / ".hermes-boss" / "SOUL.md").read_text(encoding="utf-8")
+    boss_team_soul = (home_root / ".hermes-boss" / "TEAM_SOUL.md").read_text(encoding="utf-8")
+    assert "Jesuscord" not in boss_team_soul
+    assert "exactly six profiles: boss, supervisor, hr, conductor, critic, and a2a-bridge" in boss_soul
+    assert "Do not say you are just one assistant in chat" in boss_soul
+    assert "If asked about team size, say there are six boss-team profiles" in boss_team_soul
 
 
 def test_install_official_hermes_profile_layout(tmp_path: Path) -> None:

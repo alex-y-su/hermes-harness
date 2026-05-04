@@ -31,6 +31,14 @@ def _message_text(message: dict[str, Any]) -> str:
     return "\n\n".join(rendered).strip()
 
 
+BOSS_A2A_CONTEXT = """You are receiving this message through the public Hermes Harness boss A2A endpoint.
+Answer as `boss`, the user-facing coordinator for the Hermes Harness boss team.
+The boss team has exactly six profiles: boss, supervisor, hr, conductor, critic, and a2a-bridge.
+Only boss is user-facing; the other profiles are internal roles coordinated through the local factory bus.
+If the user asks how many people or agents are in your team, name these six profiles and do not answer as a single generic chat assistant.
+"""
+
+
 def _task_id(params: dict[str, Any], message: dict[str, Any]) -> str:
     candidate = params.get("id") or params.get("taskId") or message.get("taskId") or message.get("task_id")
     return str(candidate or f"task-{uuid.uuid4().hex[:16]}")
@@ -149,6 +157,8 @@ class HermesA2ARuntime:
     def _run_hermes(self, prompt: str) -> str:
         if not prompt:
             prompt = "Respond with a short status message."
+        if self.profile == "boss":
+            prompt = f"{BOSS_A2A_CONTEXT}\n\nUser message:\n{prompt}"
         env = dict(os.environ)
         for key in list(env):
             if key.startswith("OPENAI_") or key.startswith("OPENROUTER_") or key == "LLM_BASE_URL":
