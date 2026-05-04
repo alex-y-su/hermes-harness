@@ -56,12 +56,14 @@ APP_HTML = r"""<!doctype html>
     tr:last-child td { border-bottom: 0; }
     pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); background: #0d1013; padding: 14px; border-radius: 8px; max-height: 520px; overflow: auto; }
     .split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
-    svg { width: 100%; height: 560px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; }
-    .node-label { font-size: 11px; fill: var(--text); pointer-events: none; }
-    .edge { stroke: #47525d; stroke-width: 1.2; }
-    .node-hub { fill: #67d4b4; }
-    .node-team { fill: #8ab4ff; }
-    .node-assignment { fill: #c9a7ff; }
+    svg { width: 100%; min-height: 560px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; }
+    .node-label { font-size: 13px; font-weight: 650; fill: var(--text); pointer-events: none; }
+    .node-meta { font-size: 11px; fill: var(--muted); pointer-events: none; }
+    .edge { stroke: #47525d; stroke-width: 1.4; fill: none; }
+    .org-card { stroke: var(--line); stroke-width: 1.2; rx: 8; }
+    .org-root { fill: #1f3c36; stroke: #67d4b4; }
+    .org-team { fill: #17243a; stroke: #8ab4ff; }
+    .org-assignment { fill: #251d34; stroke: #c9a7ff; }
     @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } }
   </style>
 </head>
@@ -193,21 +195,56 @@ APP_HTML = r"""<!doctype html>
       app.innerHTML = `<h1>Hub: ${esc(name)}</h1><h2>Subteams</h2>${teamTable(teams)}`;
     }
     async function renderGraph() {
-      state.graph = state.graph || await api("/api/graph");
-      const g = state.graph, width = 1000, height = 560, cx = width/2, cy = height/2;
-      const nodes = g.nodes.map((n, i) => {
-        const ring = n.type === "hub" ? 90 : n.type === "team" ? 190 : 270;
-        const angle = (Math.PI * 2 * i) / Math.max(g.nodes.length, 1);
-        return {...n, x: cx + Math.cos(angle) * ring, y: cy + Math.sin(angle) * ring};
+      const d = state.dashboard;
+      const assignmentsByTeam = {};
+      for (const assignment of d.assignments || []) {
+        (assignmentsByTeam[assignment.team_name] ||= []).push(assignment);
+      }
+      const teams = [...(d.teams || [])].sort((a, b) => a.team_name.localeCompare(b.team_name));
+      const cardW = 220, cardH = 72, xGap = 40, yGap = 90;
+      const width = Math.max(920, teams.length * (cardW + xGap) + xGap);
+      const root = {x: width / 2 - cardW / 2, y: 32, w: cardW, h: cardH, label: "Boss Team", meta: "public coordinator", kind: "root", href: "#/"};
+      const nodes = [root], edges = [];
+      teams.forEach((team, i) => {
+        const x = xGap + i * (cardW + xGap);
+        const teamNode = {
+          x, y: root.y + cardH + yGap, w: cardW, h: cardH,
+          label: team.team_name,
+          meta: `${team.substrate || "unknown"} · ${team.state || "unknown"}`,
+          kind: "team",
+          href: linkFor("team", team.team_name)
+        };
+        nodes.push(teamNode);
+        edges.push({from: root, to: teamNode});
+        (assignmentsByTeam[team.team_name] || []).slice(0, 4).forEach((assignment, j) => {
+          const assignmentNode = {
+            x, y: teamNode.y + cardH + 54 + j * (cardH + 14), w: cardW, h: cardH,
+            label: assignment.assignment_id,
+            meta: assignment.status || "unknown",
+            kind: "assignment",
+            href: linkFor("assignment", assignment.assignment_id)
+          };
+          nodes.push(assignmentNode);
+          edges.push({from: teamNode, to: assignmentNode});
+        });
       });
-      const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
-      app.innerHTML = `<h1>Graph</h1><p class="muted">Hubs, subteams, and recent assignments.</p>
+      const height = Math.max(560, Math.max(...nodes.map(n => n.y + n.h)) + 40);
+      const nodeMarkup = nodes.map(n => `
+        <a href="${n.href}">
+          <rect class="org-card org-${n.kind}" x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}"></rect>
+          <text class="node-label" x="${n.x + 14}" y="${n.y + 28}">${esc(n.label)}</text>
+          <text class="node-meta" x="${n.x + 14}" y="${n.y + 50}">${esc(n.meta)}</text>
+        </a>`).join("");
+      const edgeMarkup = edges.map(e => {
+        const x1 = e.from.x + e.from.w / 2, y1 = e.from.y + e.from.h;
+        const x2 = e.to.x + e.to.w / 2, y2 = e.to.y;
+        const mid = y1 + (y2 - y1) / 2;
+        return `<path class="edge" d="M ${x1} ${y1} V ${mid} H ${x2} V ${y2}"></path>`;
+      }).join("");
+      app.innerHTML = `<h1>Org Graph</h1><p class="muted">Boss team, connected remote teams, and their recent assignments.</p>
         <svg viewBox="0 0 ${width} ${height}">
-          ${g.edges.map(e => {
-            const s = byId[e.source], t = byId[e.target]; if (!s || !t) return "";
-            return `<line class="edge" x1="${s.x}" y1="${s.y}" x2="${t.x}" y2="${t.y}"></line>`;
-          }).join("")}
-          ${nodes.map(n => `<a href="${linkFor(n.type, n.id.split(":").slice(1).join(":"))}"><circle class="node-${n.type}" cx="${n.x}" cy="${n.y}" r="${n.type === "hub" ? 13 : n.type === "team" ? 10 : 6}"></circle><text class="node-label" x="${n.x + 10}" y="${n.y - 8}">${esc(n.label)}</text></a>`).join("")}
+          ${edgeMarkup}
+          ${nodeMarkup}
         </svg>`;
     }
     async function route() {
@@ -242,10 +279,11 @@ LOGIN_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hermes Hub Login</title>
   <style>
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101214; color: #edf1f5; font: 14px system-ui, sans-serif; }
-    form { width: min(360px, calc(100vw - 32px)); border: 1px solid #2b3238; background: #181c20; border-radius: 8px; padding: 22px; }
-    h1 { margin: 0 0 16px; font-size: 22px; }
-    input, button { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #2b3238; background: #101214; color: #edf1f5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #101214; color: #edf1f5; font: 14px system-ui, sans-serif; }
+    form { width: min(420px, 100%); border: 1px solid #2b3238; background: #181c20; border-radius: 8px; padding: 22px; }
+    h1 { margin: 0 0 16px; font-size: 22px; line-height: 1.2; }
+    input, button { display: block; width: 100%; min-width: 0; padding: 10px 12px; border-radius: 6px; border: 1px solid #2b3238; background: #101214; color: #edf1f5; font: inherit; }
     button { margin-top: 10px; background: #67d4b4; color: #101214; font-weight: 700; cursor: pointer; }
     p { color: #ff7b7b; min-height: 20px; }
   </style>
