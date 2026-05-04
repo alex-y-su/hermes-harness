@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -156,11 +157,13 @@ def process_push(
             path.write_text(artifact_text(artifact), encoding="utf-8")
             written.append(path)
         db.mark_terminal(assignment_id=assignment_id, status="completed", completed_path=written[0] if written else None)
+        _finalize_assignment_sandbox_if_present(db, factory_dir, str(team_name), assignment_id, "completed")
     elif state == "failed" and assignment_id:
         escalation_dir = ensure_dir(factory_dir / "escalations")
         path = escalation_dir / f"{team_name}_{assignment_id}_failed.md"
         path.write_text(f"# failed: {team_name}\n\n{body.get('message') or json.dumps(body, indent=2, sort_keys=True)}\n", encoding="utf-8")
         db.mark_terminal(assignment_id=assignment_id, status="failed")
+        _finalize_assignment_sandbox_if_present(db, factory_dir, str(team_name), assignment_id, "failed")
         db.append_event(
             team_name=str(team_name),
             assignment_id=assignment_id,
@@ -172,5 +175,31 @@ def process_push(
         )
     elif state == "canceled" and assignment_id:
         db.mark_terminal(assignment_id=assignment_id, status="canceled")
+        _finalize_assignment_sandbox_if_present(db, factory_dir, str(team_name), assignment_id, "canceled")
 
     return {"status": 202, "body": {"ok": True}}
+
+
+def _finalize_assignment_sandbox_if_present(
+    db: BridgeDb,
+    factory_dir: Path,
+    team_name: str,
+    assignment_id: str,
+    terminal_state: str,
+) -> None:
+    sandbox = db.get_assignment_sandbox(assignment_id)
+    if sandbox is None or sandbox["status"] == "archived":
+        return
+    metadata = json.loads(sandbox["metadata"] or "{}")
+    from harness.tools.finalize_assignment_sandbox import finalize_assignment
+
+    asyncio.run(
+        finalize_assignment(
+            factory=factory_dir,
+            db_path=db.db_path,
+            team=team_name,
+            assignment_id=assignment_id,
+            terminal_state=terminal_state,
+            dry_run=bool(metadata.get("dry_run")),
+        )
+    )

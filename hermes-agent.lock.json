@@ -1,0 +1,9 @@
+{
+  "repo": "https://github.com/NousResearch/hermes-agent.git",
+  "install_script": "https://raw.githubusercontent.com/NousResearch/hermes-agent/645a2f482de6cefcf8694a5f2f896889804d3096/scripts/install.sh",
+  "version": "v0.12.0",
+  "release_date": "2026.4.30",
+  "git_describe": "v2026.4.30-422-g645a2f482",
+  "commit": "645a2f482de6cefcf8694a5f2f896889804d3096",
+  "pinned_at": "2026-05-04"
+}

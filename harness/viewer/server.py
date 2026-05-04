@@ -396,7 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--factory", default=os.getenv("HARNESS_FACTORY", "factory"), help="Hermes factory path")
     parser.add_argument("--db", default=None, help="SQLite database path; defaults to <factory>/harness.sqlite3")
     parser.add_argument("--host", default=os.getenv("HARNESS_VIEWER_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("HARNESS_VIEWER_PORT", "8765")))
+    parser.add_argument("--port", type=int, default=int(os.getenv("HARNESS_VIEWER_PORT", "8090")))
     parser.add_argument("--access-code", default=os.getenv("HARNESS_VIEWER_ACCESS_CODE"))
     parser.add_argument("--cookie-secret", default=os.getenv("HARNESS_VIEWER_COOKIE_SECRET"))
     return parser

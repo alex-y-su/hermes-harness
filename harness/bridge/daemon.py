@@ -36,6 +36,7 @@ class BridgeDaemon:
         port: int | str = 8787,
         poll_ms: int | str = 2000,
         a2a_client: A2AClient | Any | None = None,
+        e2b_dry_run: bool = False,
     ) -> None:
         self.factory_dir = Path(factory_dir)
         self.db = db
@@ -43,6 +44,7 @@ class BridgeDaemon:
         self.port = int(port)
         self.poll_seconds = int(poll_ms) / 1000
         self.a2a_client = a2a_client or A2AClient()
+        self.e2b_dry_run = e2b_dry_run
         self.seen_halts: set[str] = set()
         self.in_progress: set[Path] = set()
         self.stop_event = threading.Event()
@@ -130,6 +132,9 @@ class BridgeDaemon:
                     team_name=team_name,
                     team_dir=team_dir,
                     inbox_path=path,
+                    factory_dir=self.factory_dir,
+                    db_path=self.db.db_path,
+                    e2b_dry_run=self.e2b_dry_run,
                 )
             finally:
                 self.in_progress.discard(path)

@@ -1,0 +1,14 @@
+{
+  "name": "hermes-harness-remote-full-template",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:dev": "e2b template create hermes-harness-remote-full --path . --dockerfile e2b.Dockerfile --cpu-count 2 --memory-mb 2048",
+    "build:prod": "e2b template create hermes-harness-remote-full --path . --dockerfile e2b.Dockerfile --cpu-count 2 --memory-mb 2048"
+  },
+  "dependencies": {
+    "@e2b/cli": "2.10.1",
+    "e2b": "1.13.2",
+    "tsx": "^4.19.0"
+  }
+}

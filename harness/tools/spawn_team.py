@@ -6,6 +6,7 @@ import os
 
 from harness import db
 from harness.factory import append_journal, copy_template, load_template, read_json, team_path, utc_now, write_json
+from harness.models import SubstrateHandle
 from harness.substrate.factory import build_driver
 from harness.tools.common import add_factory_args, paths
 
@@ -43,15 +44,29 @@ async def run(args: argparse.Namespace) -> dict[str, str]:
     }
     copy_template(template, team_dir, variables)
 
-    driver = build_driver(args.substrate, dry_run=args.dry_run, agent_card_url=args.agent_card_url)
-    handle = await driver.provision(args.name, team_dir, template, args.timeout_seconds)
-    handle = type(handle)(
-        team_name=handle.team_name,
-        substrate=handle.substrate,
-        handle=handle.handle,
-        metadata={**handle.metadata, "boot_mode": template.boot_mode, "workspace_path": str(team_dir)},
-    )
-    agent_card_url = await driver.boot(handle)
+    if args.substrate == "e2b":
+        handle = SubstrateHandle(
+            team_name=args.name,
+            substrate="e2b",
+            handle=f"e2b-team://{args.name}",
+            metadata={
+                "boot_mode": template.boot_mode,
+                "workspace_path": str(team_dir),
+                "per_assignment": True,
+                "dry_run": bool(args.dry_run),
+            },
+        )
+        agent_card_url = args.agent_card_url or ""
+    else:
+        driver = build_driver(args.substrate, dry_run=args.dry_run, agent_card_url=args.agent_card_url)
+        handle = await driver.provision(args.name, team_dir, template, args.timeout_seconds)
+        handle = type(handle)(
+            team_name=handle.team_name,
+            substrate=handle.substrate,
+            handle=handle.handle,
+            metadata={**handle.metadata, "boot_mode": template.boot_mode, "workspace_path": str(team_dir)},
+        )
+        agent_card_url = await driver.boot(handle)
 
     transport_path = team_dir / "transport.json"
     transport = read_json(transport_path)
@@ -61,6 +76,7 @@ async def run(args: argparse.Namespace) -> dict[str, str]:
             "substrate": args.substrate,
             "agent_card_url": agent_card_url,
             "push_url": push_url,
+            "per_assignment": args.substrate == "e2b",
             "team_bearer_token_ref": f"env://HARNESS_TEAM_{args.name.upper().replace('-', '_')}_BEARER_TOKEN",
             "push_token_ref": f"env://HARNESS_TEAM_{args.name.upper().replace('-', '_')}_PUSH_TOKEN",
             "bridge_secret_ref": "env://HARNESS_BRIDGE_SECRET",

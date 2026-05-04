@@ -157,6 +157,70 @@ def mark_handle_archived(conn: sqlite3.Connection, team_name: str) -> None:
     )
 
 
+def save_assignment_sandbox(
+    conn: sqlite3.Connection,
+    *,
+    assignment_id: str,
+    team_name: str,
+    handle: SubstrateHandle,
+    agent_card_url: str | None,
+    status: str = "booted",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO assignment_sandboxes (
+          assignment_id, team_name, substrate, handle, agent_card_url, status,
+          booted_at, metadata
+        )
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(assignment_id) DO UPDATE SET
+          team_name = excluded.team_name,
+          substrate = excluded.substrate,
+          handle = excluded.handle,
+          agent_card_url = excluded.agent_card_url,
+          status = excluded.status,
+          booted_at = COALESCE(assignment_sandboxes.booted_at, excluded.booted_at),
+          metadata = excluded.metadata
+        """,
+        (
+            assignment_id,
+            team_name,
+            handle.substrate,
+            json.dumps(asdict(handle), sort_keys=True),
+            agent_card_url,
+            status,
+            json.dumps(metadata or {}, sort_keys=True),
+        ),
+    )
+
+
+def load_assignment_sandbox(conn: sqlite3.Connection, assignment_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM assignment_sandboxes WHERE assignment_id = ?", (assignment_id,)).fetchone()
+
+
+def mark_assignment_sandbox_terminal(conn: sqlite3.Connection, assignment_id: str, status: str) -> None:
+    conn.execute(
+        """
+        UPDATE assignment_sandboxes
+        SET status = ?, terminal_at = COALESCE(terminal_at, CURRENT_TIMESTAMP)
+        WHERE assignment_id = ?
+        """,
+        (status, assignment_id),
+    )
+
+
+def mark_assignment_sandbox_archived(conn: sqlite3.Connection, assignment_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE assignment_sandboxes
+        SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+        WHERE assignment_id = ?
+        """,
+        (assignment_id,),
+    )
+
+
 def active_assignments(conn: sqlite3.Connection, team_name: str) -> list[sqlite3.Row]:
     return list(
         conn.execute(

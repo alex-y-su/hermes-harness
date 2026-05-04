@@ -12,29 +12,35 @@ license = { text = "Proprietary" }
 dependencies = []
 
 [project.optional-dependencies]
-e2b = ["e2b-code-interpreter>=1.0"]
+e2b = ["e2b>=1.0", "e2b-code-interpreter>=1.0"]
 test = ["pytest>=8.0"]
 
 [project.scripts]
 harness-a2a-bridge = "harness.bridge.cli:main"
+harness-remote-supervisor = "harness_remote.cli:main"
 harness-spawn-team = "harness.tools.spawn_team:main"
+harness-run-assignment-sandbox = "harness.tools.run_assignment_sandbox:main"
+harness-finalize-assignment-sandbox = "harness.tools.finalize_assignment_sandbox:main"
 harness-dispatch-team = "harness.tools.dispatch_team:main"
 harness-sunset-team = "harness.tools.sunset_team:main"
 harness-query-remote-teams = "harness.tools.query_remote_teams:main"
 harness-inspect-team = "harness.tools.inspect_team:main"
 harness-escalate = "harness.tools.escalate:main"
 harness-hub-viewer = "harness.viewer.server:main"
+harness-boss-team = "harness.tools.boss_team:main"
+harness-hermes-a2a-server = "harness.tools.hermes_a2a_server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.hatch.build.targets.wheel]
-packages = ["harness"]
+packages = ["harness", "harness_remote"]
 include = [
   "schema/sqlite.sql",
   "templates/**",
+  "e2b-templates/**",
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["harness", "schema", "templates", "tests", "docs", "pyproject.toml"]
+include = ["harness", "harness_remote", "schema", "templates", "e2b-templates", "tests", "docs", "pyproject.toml"]

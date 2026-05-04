@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env", default=os.environ.get("HARNESS_ENV_PATH"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("HARNESS_A2A_BRIDGE_PORT", "8787")))
     parser.add_argument("--poll-ms", type=int, default=int(os.environ.get("HARNESS_A2A_BRIDGE_POLL_MS", "2000")))
+    parser.add_argument("--e2b-dry-run", action="store_true", default=os.environ.get("HARNESS_E2B_DRY_RUN") == "1")
     return parser
 
 
@@ -30,6 +31,7 @@ def main(argv: list[str] | None = None) -> None:
         secrets=SecretResolver(args.env),
         port=args.port,
         poll_ms=args.poll_ms,
+        e2b_dry_run=args.e2b_dry_run,
     )
     install_signal_handlers(daemon, db)
     try:

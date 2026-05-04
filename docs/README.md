@@ -7,6 +7,10 @@ Two folders, deliberately separated:
 - **`research/`** — what is, with evidence and citations. Read first if you want to understand the landscape; read again later if you forget *why* a recommendation was made.
 - **`practical/`** — what to do, with concrete configs, files, and code. Read first if you just want to ship.
 
+Canonical implementation contracts:
+
+- [`boss-team-contract.md`](boss-team-contract.md) — the generic six-profile boss team used by `install.sh`, `harness-boss-team`, and hub verification.
+
 ## Reading order
 
 For a fresh read, top-to-bottom:

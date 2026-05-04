@@ -55,3 +55,20 @@ CREATE TABLE IF NOT EXISTS substrate_handles (
   expires_at      TEXT,
   archived_at     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS assignment_sandboxes (
+  assignment_id   TEXT PRIMARY KEY,
+  team_name       TEXT NOT NULL,
+  substrate       TEXT NOT NULL,
+  handle          TEXT NOT NULL,
+  agent_card_url  TEXT,
+  status          TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  booted_at       TEXT,
+  terminal_at     TEXT,
+  archived_at     TEXT,
+  metadata        TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS assignment_sandboxes_team_status
+  ON assignment_sandboxes (team_name, status);

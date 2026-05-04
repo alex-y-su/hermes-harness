@@ -1,0 +1,28 @@
+services:
+  hermes-boss:
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes
+    container_name: hermes-boss
+    environment:
+      CODEX_HOME: /codex-auth
+      FACTORY_DIR: /factory
+      HERMES_A2A_BASE_PORT: "8080"
+      HERMES_A2A_BIND_HOST: 0.0.0.0
+      HERMES_A2A_PUBLIC_HOST: 127.0.0.1
+      HERMES_A2A_PUBLIC_URL: ${HERMES_A2A_PUBLIC_URL:-}
+      HERMES_BOOTSTRAP_BACKUP_ROOT: /tmp
+      HERMES_HOME: /opt/hermes-home
+      HERMES_INSTALL_DIR: /opt/hermes-home/hermes-agent
+    ports:
+      - "${HERMES_BOSS_BIND_IP:-127.0.0.1}:8080:8080"
+    volumes:
+      - hermes-boss-home:/opt/hermes-home
+      - hermes-boss-factory:/factory
+      - hermes-boss-playwright:/root/.cache/ms-playwright
+      - ${HOME}/.codex/auth.json:/codex-auth/auth.json:ro
+
+volumes:
+  hermes-boss-home:
+  hermes-boss-factory:
+  hermes-boss-playwright:

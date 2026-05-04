@@ -100,6 +100,74 @@ class BridgeDb:
         with self.lock:
             return self.conn.execute("SELECT * FROM substrate_handles WHERE team_name = ?", (team_name,)).fetchone()
 
+    def save_assignment_sandbox(
+        self,
+        *,
+        assignment_id: str,
+        team_name: str,
+        substrate: str,
+        handle: str,
+        agent_card_url: str | None,
+        status: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT INTO assignment_sandboxes (
+                  assignment_id, team_name, substrate, handle, agent_card_url, status,
+                  booted_at, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(assignment_id) DO UPDATE SET
+                  team_name = excluded.team_name,
+                  substrate = excluded.substrate,
+                  handle = excluded.handle,
+                  agent_card_url = excluded.agent_card_url,
+                  status = excluded.status,
+                  booted_at = COALESCE(assignment_sandboxes.booted_at, excluded.booted_at),
+                  metadata = excluded.metadata
+                """,
+                (
+                    assignment_id,
+                    team_name,
+                    substrate,
+                    handle,
+                    agent_card_url,
+                    status,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            self.conn.commit()
+
+    def get_assignment_sandbox(self, assignment_id: str) -> sqlite3.Row | None:
+        with self.lock:
+            return self.conn.execute("SELECT * FROM assignment_sandboxes WHERE assignment_id = ?", (assignment_id,)).fetchone()
+
+    def mark_assignment_sandbox_terminal(self, *, assignment_id: str, status: str) -> None:
+        with self.lock:
+            self.conn.execute(
+                """
+                UPDATE assignment_sandboxes
+                SET status = ?, terminal_at = COALESCE(terminal_at, CURRENT_TIMESTAMP)
+                WHERE assignment_id = ?
+                """,
+                (status, assignment_id),
+            )
+            self.conn.commit()
+
+    def mark_assignment_sandbox_archived(self, assignment_id: str) -> None:
+        with self.lock:
+            self.conn.execute(
+                """
+                UPDATE assignment_sandboxes
+                SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+                WHERE assignment_id = ?
+                """,
+                (assignment_id,),
+            )
+            self.conn.commit()
+
     def append_event(
         self,
         *,

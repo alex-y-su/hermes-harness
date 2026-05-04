@@ -1,0 +1,22 @@
+services:
+  harness-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes
+    container_name: hermes-bridge
+    entrypoint: []
+    command: ["python3", "-m", "harness.bridge.cli"]
+    env_file:
+      - ${HERMES_BRIDGE_ENV_FILE:-.bridge.env}
+    environment:
+      CODEX_HOME: /codex-auth
+      HARNESS_A2A_BRIDGE_PORT: "8787"
+      HARNESS_ENV_PATH: /run/secrets/harness-bridge.env
+      HARNESS_FACTORY_DIR: /factory
+      HARNESS_SQLITE_PATH: /factory/harness.sqlite3
+    ports:
+      - "${HERMES_BRIDGE_BIND_IP:-127.0.0.1}:8787:8787"
+    volumes:
+      - hermes-boss-factory:/factory
+      - ${HOME}/.codex/auth.json:/codex-auth/auth.json:ro
+      - ${HERMES_BRIDGE_ENV_FILE:-.bridge.env}:/run/secrets/harness-bridge.env:ro

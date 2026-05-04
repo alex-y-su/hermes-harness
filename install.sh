@@ -9,8 +9,6 @@ HARNESS_ENV_PATH="${HARNESS_ENV_PATH:-}"
 BOSS_PUSH_URL="${BOSS_PUSH_URL:-}"
 OBSIDIAN_VAULT="${OBSIDIAN_VAULT:-}"
 
-PROFILES=(boss supervisor hr conductor critic a2a-bridge)
-
 fail() {
   echo "ERROR: $*" >&2
   exit 1
@@ -49,42 +47,7 @@ cp "$ROOT_DIR/bus_template/BLACKBOARD.md" "$FACTORY_DIR/BLACKBOARD.md"
 cp "$ROOT_DIR/bus_template/PRIORITIZE.md" "$FACTORY_DIR/PRIORITIZE.md"
 chmod 444 "$FACTORY_DIR/HARD_RULES.md"
 
-for profile in "${PROFILES[@]}"; do
-  mkdir -p "$FACTORY_DIR/inbox/$profile" "$FACTORY_DIR/outbox/$profile"
-  home_dir="$HOME/.hermes-$profile"
-  mkdir -p "$home_dir"
-  cat > "$home_dir/AGENTS.md" <<EOF
-# AGENTS.md for $profile
-
-Read these files at session start:
-1. $home_dir/SOUL.md
-2. $FACTORY_DIR/PROTOCOL.md
-3. $FACTORY_DIR/HARD_RULES.md
-4. $FACTORY_DIR/STANDING_APPROVALS.md
-5. $home_dir/TEAM_SOUL.md
-6. $FACTORY_DIR/PRIORITIZE.md
-7. $FACTORY_DIR/QUIET_HOURS.md
-
-Factory: $FACTORY_DIR
-Profile: $profile
-EOF
-  cat > "$home_dir/config.yaml" <<EOF
-profile_name: $profile
-agent:
-  max_turns: 500
-goals:
-  max_turns: 1000
-compression:
-  threshold: 0.70
-approvals:
-  mode: off
-hooks_auto_accept: true
-delegation:
-  max_iterations: 200
-EOF
-  [[ -f "$home_dir/SOUL.md" ]] || printf '# %s\n\nGeneric Hermes Harness profile.\n' "$profile" > "$home_dir/SOUL.md"
-  [[ -f "$home_dir/TEAM_SOUL.md" ]] || printf '# %s TEAM_SOUL\n\nYou are running on a long-horizon mission. No human is waiting for a polished summary at the end of each cycle. Continue until criteria are met or you are hard-blocked.\n' "$profile" > "$home_dir/TEAM_SOUL.md"
-done
+PYTHONPATH="$ROOT_DIR" python3 -m harness.tools.boss_team install-local --factory "$FACTORY_DIR" --home-root "$HOME"
 
 python3 -m pip install -e "$ROOT_DIR"
 sqlite3 "$HARNESS_SQLITE_PATH" < "$ROOT_DIR/schema/sqlite.sql"

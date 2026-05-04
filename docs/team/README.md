@@ -2,6 +2,8 @@
 
 14-profile autonomous marketing factory. Goal: 10M Jesuscord installs in 90 days.
 
+Note: this folder is a legacy, domain-specific Jesuscord bundle. It is not the canonical Hermes Harness boss-team contract. The generic Hermes Harness boss team is six profiles (`boss`, `supervisor`, `hr`, `conductor`, `critic`, `a2a-bridge`) and is defined in [`../boss-team-contract.md`](../boss-team-contract.md).
+
 ## Read in this order
 
 1. **INSTALL_GUIDE.md** — dummy walkthrough to get it running. Parts A-F.

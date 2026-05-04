@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,9 @@ def dispatch_assignment(
     team_name: str,
     team_dir: str | Path,
     inbox_path: str | Path,
+    factory_dir: str | Path | None = None,
+    db_path: str | Path | None = None,
+    e2b_dry_run: bool = False,
 ) -> dict[str, Any]:
     team_dir = Path(team_dir)
     inbox_path = Path(inbox_path)
@@ -28,6 +32,20 @@ def dispatch_assignment(
         return {"skipped": True, "missing": True}
 
     transport = read_json(team_dir / "transport.json")
+    provisioned_assignment_sandbox = False
+    if _needs_assignment_sandbox(transport):
+        if factory_dir is None or db_path is None:
+            raise ValueError("factory_dir and db_path are required for per-assignment E2B dispatch")
+        sandbox = _run_async_assignment_sandbox(
+            factory=Path(factory_dir),
+            db_path=Path(db_path),
+            team=team_name,
+            assignment_id=assignment_id,
+            dry_run=e2b_dry_run,
+            secrets=secrets,
+        )
+        transport = {**transport, "agent_card_url": sandbox["agent_card_url"]}
+        provisioned_assignment_sandbox = True
     bearer_token = secrets.resolve(transport.get("team_bearer_token_ref"))
     push_token = secrets.resolve(transport.get("push_token_ref"))
     text = inbox_path.read_text(encoding="utf-8")
@@ -42,6 +60,15 @@ def dispatch_assignment(
         )
     except Exception as error:
         db.update_assignment_status(assignment_id=assignment_id, status="failed")
+        if provisioned_assignment_sandbox and factory_dir is not None and db_path is not None:
+            _run_async_finalize_assignment(
+                factory=Path(factory_dir),
+                db_path=Path(db_path),
+                team=team_name,
+                assignment_id=assignment_id,
+                terminal_state="failed",
+                dry_run=e2b_dry_run,
+            )
         failure_path = inbox_path.parent / f"{assignment_id}.failed.json"
         write_json(
             failure_path,
@@ -87,6 +114,58 @@ def dispatch_assignment(
         payload_path=in_flight_path,
     )
     return {"dispatched": True, "task_id": task_id}
+
+
+def _needs_assignment_sandbox(transport: dict[str, Any]) -> bool:
+    if transport.get("substrate") != "e2b":
+        return False
+    return bool(transport.get("per_assignment")) or not bool(str(transport.get("agent_card_url") or "").strip())
+
+
+def _run_async_assignment_sandbox(
+    *,
+    factory: Path,
+    db_path: Path,
+    team: str,
+    assignment_id: str,
+    dry_run: bool,
+    secrets: SecretResolver | None = None,
+) -> dict[str, str]:
+    from harness.tools.run_assignment_sandbox import run_for_assignment
+
+    return asyncio.run(
+        run_for_assignment(
+            factory=factory,
+            db_path=db_path,
+            team=team,
+            assignment_id=assignment_id,
+            dry_run=dry_run,
+            secret_resolver=secrets,
+        )
+    )
+
+
+def _run_async_finalize_assignment(
+    *,
+    factory: Path,
+    db_path: Path,
+    team: str,
+    assignment_id: str,
+    terminal_state: str,
+    dry_run: bool,
+) -> dict[str, str]:
+    from harness.tools.finalize_assignment_sandbox import finalize_assignment
+
+    return asyncio.run(
+        finalize_assignment(
+            factory=factory,
+            db_path=db_path,
+            team=team,
+            assignment_id=assignment_id,
+            terminal_state=terminal_state,
+            dry_run=dry_run,
+        )
+    )
 
 
 def _normalize_send_result(send_result: Any) -> tuple[str, Any]:

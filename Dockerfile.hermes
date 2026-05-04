@@ -1,0 +1,62 @@
+FROM python:3.13-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    ffmpeg \
+    fonts-freefont-ttf \
+    fonts-ipafont-gothic \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    fonts-tlwg-loma-otf \
+    fonts-unifont \
+    fonts-wqy-zenhei \
+    jq \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libnspr4 \
+    libnss3 \
+    libxcomposite1 \
+    libxdamage1 \
+    lsof \
+    nodejs \
+    npm \
+    pkg-config \
+    procps \
+    ripgrep \
+    sqlite3 \
+    xfonts-scalable \
+    xvfb \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . /app
+
+RUN python3 -m pip install --upgrade pip setuptools wheel \
+  && python3 -m pip install -e ".[test,e2b]" playwright
+
+RUN mkdir -p /opt/hermes-home /factory /codex-auth
+
+ENV HOME=/root \
+    HERMES_HOME=/opt/hermes-home \
+    HERMES_INSTALL_DIR=/opt/hermes-home/hermes-agent \
+    HERMES_BOOTSTRAP_FORCE_PIN=1 \
+    FACTORY_DIR=/factory \
+    HERMES_BOOTSTRAP_BACKUP_ROOT=/tmp \
+    HERMES_A2A_BASE_PORT=8080 \
+    HERMES_A2A_BIND_HOST=0.0.0.0 \
+    HERMES_A2A_PUBLIC_HOST=127.0.0.1 \
+    CODEX_HOME=/codex-auth \
+    PATH=/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/scripts/docker_boss_entrypoint.sh"]
