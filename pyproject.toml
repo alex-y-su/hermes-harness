@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-harness"
+version = "0.1.0"
+description = "Python harness scaffold for Hermes remote-team substrates and tools"
+readme = "docs/hermes-harness-a2a-e2b-plugin-spec.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = []
+
+[project.optional-dependencies]
+e2b = ["e2b-code-interpreter>=1.0"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+harness-spawn-team = "harness.tools.spawn_team:main"
+harness-dispatch-team = "harness.tools.dispatch_team:main"
+harness-sunset-team = "harness.tools.sunset_team:main"
+harness-query-remote-teams = "harness.tools.query_remote_teams:main"
+harness-inspect-team = "harness.tools.inspect_team:main"
+harness-escalate = "harness.tools.escalate:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["harness"]
+include = [
+  "schema/sqlite.sql",
+  "templates/**",
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["harness", "schema", "templates", "tests", "docs", "pyproject.toml"]

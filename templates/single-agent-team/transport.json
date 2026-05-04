@@ -1,0 +1,10 @@
+{
+  "protocol": "a2a",
+  "substrate": "$SUBSTRATE",
+  "agent_card_url": "",
+  "push_url": "$PUSH_URL",
+  "team_bearer_token_ref": "",
+  "push_token_ref": "",
+  "bridge_secret_ref": "env://HARNESS_BRIDGE_SECRET",
+  "substrate_handle_ref": ""
+}

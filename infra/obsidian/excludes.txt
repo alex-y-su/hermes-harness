@@ -1,0 +1,10 @@
+factory/teams/*/internal/
+factory/teams/*/transport.json
+factory/teams/*/source/.git/
+factory/teams/*/source/node_modules/
+factory/teams/*/source/.venv/
+*.secret
+.env
+.env.*
+secrets/
+credentials/
