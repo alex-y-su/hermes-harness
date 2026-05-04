@@ -1,0 +1,26 @@
+services:
+  harness-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes
+    container_name: hermes-viewer
+    entrypoint: []
+    command:
+      - python3
+      - -m
+      - harness.viewer.server
+      - --factory
+      - /factory
+      - --db
+      - /factory/harness.sqlite3
+      - --host
+      - 0.0.0.0
+    env_file:
+      - ${HERMES_VIEWER_ENV_FILE:-.viewer.env}
+    environment:
+      HARNESS_VIEWER_PORT: "8090"
+      HARNESS_VIEWER_QUIET: "1"
+    ports:
+      - "${HERMES_VIEWER_BIND_IP:-127.0.0.1}:8090:8090"
+    volumes:
+      - hermes-boss-factory:/factory

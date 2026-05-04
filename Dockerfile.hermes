@@ -57,6 +57,6 @@ ENV HOME=/root \
     CODEX_HOME=/codex-auth \
     PATH=/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
-EXPOSE 8080
+EXPOSE 8080 8090
 
 ENTRYPOINT ["/app/scripts/docker_boss_entrypoint.sh"]
