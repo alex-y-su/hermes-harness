@@ -41,7 +41,7 @@ This document is the canonical spec. Vocabulary follows `~/projects/hermes-harne
 │  ├── Profile: hr          — routes, spawns/sunsets remote teams      │
 │  ├── Profile: conductor   — owns cron, tunes beats                   │
 │  ├── Profile: critic      — durable critical review of returned work │
-│  └── Profile: a2a-bridge  — daemon (Node), no LLM, factory ⇄ A2A     │
+│  └── Profile: a2a-bridge  — daemon (Python), no LLM, factory ⇄ A2A   │
 │                                                                      │
 │  factory/ filesystem bus  (the coordination plane, single host)      │
 │  ├── orders/, approved_orders/, assignments/, inbox/, outbox/        │
@@ -99,9 +99,9 @@ The critic's auxiliary model must be strong (pin in config). A weak critic false
 
 ### 3.3 a2a-bridge — daemon, not an LLM profile
 
-This is a long-running Node process, not a Hermes-driven LLM cycle. It registers in the factory bus *as if* it were a profile (writes `status/a2a-bridge.json` heartbeat, respects `HALT_a2a-bridge.flag`) so conductor's health checks treat it identically. But it consumes zero LLM tokens.
+This is a long-running Python process, not a Hermes-driven LLM cycle. It registers in the factory bus *as if* it were a profile (writes `status/a2a-bridge.json` heartbeat, respects `HALT_a2a-bridge.flag`) so conductor's health checks treat it identically. But it consumes zero LLM tokens.
 
-Why Node not Python: demon's reusable pieces are TypeScript and use `@a2a-js/sdk@^0.3.13`. Re-porting to Python would re-implement RetryPushSender, the AgentCard validators, the peer registry — all already battle-tested in demon. Cheaper to ship a Node daemon as part of the plugin than to maintain a Python A2A client.
+Why Python: Hermes Harness is Python-first, and the bridge's required behavior is ordinary HTTP, SQLite, HMAC, filesystem scanning, and A2A JSON-RPC. Keeping the bridge in Python removes the Node runtime from local installation while preserving the same A2A wire contract.
 
 Bridge responsibilities:
 
@@ -233,7 +233,7 @@ sandbox.commands.run(
 agent_card_url = `https://${sandbox.getHost(8000)}/.well-known/agent-card.json`
 ```
 
-`sandbox.getHost(port)` is a real E2B SDK feature, just unused in Nexus. The Hermes agent inside runs the A2A server (using `@a2a-js/sdk` patterns from demon) and registers its push-notification target back to the boss.
+`sandbox.getHost(port)` is a real E2B SDK feature, just unused in Nexus. The Hermes agent inside runs the A2A server through the selected Hermes A2A adapter and registers its push-notification target back to the boss.
 
 ### 5.3 24-hour cap
 
@@ -246,7 +246,7 @@ E2B Pro caps sandboxes at 24h. Two strategies, picked per team-class in standing
 
 ## 6. The A2A bridge — concrete design
 
-Single Node process. Embeds `@a2a-js/sdk@^0.3.13`. Watches the local filesystem bus and translates to A2A wire. Reuses code from `~/projects/demon` directly.
+Single Python process. Watches the local filesystem bus and translates to A2A JSON-RPC wire calls while receiving signed push notifications.
 
 ### 6.1 Outbound — boss → team
 
@@ -418,8 +418,7 @@ CLI is pure thin wrapper over the same dispatch surface the boss agent uses. No 
 hermes-harness/
 ├── README.md
 ├── install.sh                   ← one-command install: factory/, profiles, bridge, db
-├── pyproject.toml               ← Python tools (hr, supervisor helpers, cli)
-├── package.json                 ← Node bridge (a2a-bridge daemon)
+├── pyproject.toml               ← Python tools, substrate drivers, bridge daemon
 │
 ├── skills/                      ← markdown skill packs
 │   ├── boss/SKILL.md
@@ -476,19 +475,13 @@ hermes-harness/
 │   ├── QUIET_HOURS.md           ← skeleton
 │   └── README.md
 │
-├── bridge/                      ← Node a2a-bridge daemon
-│   ├── package.json (depends on @a2a-js/sdk@^0.3.13)
-│   ├── src/
-│   │   ├── index.ts             ← Express receiver + watcher
-│   │   ├── a2a/
-│   │   │   ├── retry-push-sender.ts  ← copied from demon
-│   │   │   ├── peer-registry.ts      ← ported from demon
-│   │   │   ├── agent-card.ts         ← ported, simplified
-│   │   │   └── executor-adapter.ts   ← ported, swapped engine
-│   │   ├── factory-watcher.ts   ← inotify/chokidar over factory/teams/*
-│   │   ├── postgres-event-log.ts
-│   │   └── hmac.ts              ← signature gen + verify
-│   └── tsconfig.json
+├── harness/bridge/              ← Python a2a-bridge daemon
+│   ├── cli.py                   ← console entrypoint
+│   ├── daemon.py                ← push receiver + watcher
+│   ├── a2a_client.py            ← JSON-RPC send/cancel adapter
+│   ├── push.py                  ← signed push receiver logic
+│   ├── store.py                 ← SQLite assignment/event access
+│   └── hmac.py                  ← signature gen + verify
 │
 ├── infra/
 │   ├── postgres/schema.sql      ← team_events
@@ -517,7 +510,7 @@ hermes-harness/
 3. Copy `bus_template/` to `<project>/factory/`.
 4. Copy `templates/` to `~/.hermes/harness/templates/`.
 5. `pip install -e .` for tools and substrate drivers.
-6. `pnpm install && pnpm build` in `bridge/`.
+6. Verify `harness-a2a-bridge --help`.
 7. Spin up Postgres, run `infra/postgres/schema.sql`.
 8. Initialize Obsidian vault at the configured path with `infra/obsidian/vault.json`.
 9. Register cron entries via `hermes cron create` for boss/supervisor/hr/conductor/critic (5-min beats by default).
@@ -534,7 +527,7 @@ Plan in agent-iteration units per the user's CLAUDE.md. One iteration ≈ one fo
 
 - Create `hermes-harness` repo skeleton, license, README, install.sh stub.
 - Set up Python project with `tools/` and `substrate/` packages.
-- Set up Node bridge project with `@a2a-js/sdk` dependency.
+- Set up Python bridge package and console script.
 - Postgres schema in `infra/postgres/schema.sql`.
 
 ### Phase 1 — local boss team (~8 iters)
@@ -600,7 +593,7 @@ Plan in agent-iteration units per the user's CLAUDE.md. One iteration ≈ one fo
 - **A2A is still maturing in 2026.** [a2a-protocol.org](https://a2a-protocol.org/) and [a2aproject/a2a-python](https://github.com/a2aproject/a2a-python) are real, donated to the Linux Foundation. But the heterogeneous-agent-fleet promise is partly aspirational — most production agent platforms speak custom HTTP or MCP-tool-server. The bridge being A2A means *future* heterogeneity is cheap; today, every team is Hermes.
 - **E2B file-sync is API-driven, not rsync.** Nexus's pattern (`sandbox.files.write` + `watchDir`) is mechanically different from rsync. We say "rsync-style" colloquially but the implementation is E2B-native. If you migrate to a substrate where rsync is natural (Fly Machines, dedicated VMs), the substrate driver wraps it.
 - **24h mission boundary is soft.** The checkpoint-and-respawn pattern works but introduces a discontinuity in the team's internal state (sub-profiles see a fresh boot). Teams with non-checkpointable internal state (e.g. an in-flight long-running shell command) lose work at the boundary. Boss decides which teams are >24h-eligible via standing approvals.
-- **Bridge cost is non-zero but small.** A Node daemon + Postgres connection + chokidar watcher per ~1–10s burns negligible CPU. The dominant cost is LLM tokens (boss/supervisor/hr/conductor/critic each running every 5 min) — that's the lever to optimize, not bridge infrastructure.
+- **Bridge cost is non-zero but small.** A Python daemon + database connection + filesystem scan per ~1–10s burns negligible CPU. The dominant cost is LLM tokens (boss/supervisor/hr/conductor/critic each running every 5 min) — that's the lever to optimize, not bridge infrastructure.
 - **HMAC-key rotation is a future problem.** Day-1 ships one `BRIDGE_SECRET`. Rotation requires a brief downtime where the bridge accepts both old and new signatures. Defer until you have a regulatory or incident-driven reason to rotate.
 - **Per-team substrate cost ceilings are critical.** At fleet scale, a single team in a runaway loop can burn $1000s in E2B + LLM tokens before the conductor's hourly cost beat catches it. HARD_RULES.md §1 caps + per-team budget envelopes in standing approvals + bridge-side enforcement at the substrate level (kill sandbox at $X/hr threshold) are non-negotiable. Specify these before phase 3.
 - **The plugin is opinionated.** No support for boss agents that aren't Hermes. No support for substrates that don't expose a long-lived port. No support for non-A2A protocols (yet). If your fleet needs any of these, write the corresponding driver — but the architecture stays.

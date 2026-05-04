@@ -336,7 +336,7 @@ Responsibilities:
 }
 ```
 
-The Node bridge can call this tool before A2A dispatch.
+The Python bridge can call this tool before A2A dispatch.
 
 ### 6. Update bridge dispatch lifecycle
 

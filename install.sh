@@ -24,8 +24,6 @@ require_env() {
 echo "=== Hermes Harness install ==="
 
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
-command -v node >/dev/null 2>&1 || fail "node is required"
-command -v npm >/dev/null 2>&1 || fail "npm is required"
 command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required"
 command -v hermes >/dev/null 2>&1 || fail "hermes is required"
 
@@ -89,7 +87,6 @@ EOF
 done
 
 python3 -m pip install -e "$ROOT_DIR"
-npm install --prefix "$ROOT_DIR"
 sqlite3 "$HARNESS_SQLITE_PATH" < "$ROOT_DIR/schema/sqlite.sql"
 
 mkdir -p "$HOME/.hermes/harness"
@@ -114,4 +111,4 @@ echo "Installed Hermes Harness."
 echo "Factory: $FACTORY_DIR"
 echo "SQLite: $HARNESS_SQLITE_PATH"
 echo "Bridge:"
-echo "  HARNESS_FACTORY_DIR=$FACTORY_DIR HARNESS_SQLITE_PATH=$HARNESS_SQLITE_PATH HARNESS_ENV_PATH=$HARNESS_ENV_PATH npm --prefix $ROOT_DIR run bridge"
+echo "  HARNESS_FACTORY_DIR=$FACTORY_DIR HARNESS_SQLITE_PATH=$HARNESS_SQLITE_PATH HARNESS_ENV_PATH=$HARNESS_ENV_PATH harness-a2a-bridge"

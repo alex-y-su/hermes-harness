@@ -16,6 +16,7 @@ e2b = ["e2b-code-interpreter>=1.0"]
 test = ["pytest>=8.0"]
 
 [project.scripts]
+harness-a2a-bridge = "harness.bridge.cli:main"
 harness-spawn-team = "harness.tools.spawn_team:main"
 harness-dispatch-team = "harness.tools.dispatch_team:main"
 harness-sunset-team = "harness.tools.sunset_team:main"

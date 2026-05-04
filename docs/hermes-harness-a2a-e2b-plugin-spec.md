@@ -22,7 +22,7 @@ Hermes Harness provides:
 
 - A generic local boss team with six profiles: `boss`, `supervisor`, `hr`, `conductor`, `critic`, and `a2a-bridge`.
 - A `factory/teams/<name>/` contract for each remote team.
-- A Node A2A bridge that translates local filesystem assignments into A2A `message/send` calls and translates push-notification updates back into local factory state.
+- A Python A2A bridge that translates local filesystem assignments into A2A `message/send` calls and translates push-notification updates back into local factory state.
 - An E2B substrate driver for provisioning, booting, syncing, health checking, canceling, and archiving remote teams.
 - A SQLite event log for low-token team queries and operational dashboards.
 - An Obsidian mirror for human-readable fleet observability.
@@ -103,7 +103,7 @@ The engineer who extends substrates, bridge behavior, templates, tools, and pack
 
 Needs:
 
-- Separated Python and Node responsibilities.
+- Separated bridge, substrate, template, and tool responsibilities.
 - Stable database schema.
 - Reproducible E2B templates.
 - Explicit integration tests and acceptance criteria.
@@ -131,7 +131,7 @@ Needs:
 | `hr` | Hermes LLM profile | Routing, team spawning, team sunset, roster management |
 | `conductor` | Hermes LLM profile | Cron beats, health checks, dashboard generation |
 | `critic` | Hermes LLM profile | Fresh-context critique of returned artifacts |
-| `a2a-bridge` | Node daemon | Filesystem-to-A2A dispatch, push receiver, event logging |
+| `a2a-bridge` | Python daemon | Filesystem-to-A2A dispatch, push receiver, event logging |
 | `substrate` | Python package | E2B and future substrate provisioning |
 | `SQLite` | Embedded database | Event log, dedupe, assignment/task mapping |
 | `Obsidian mirror` | Filesystem mirror | Founder-facing live state |
@@ -313,11 +313,11 @@ No application-level budget, concurrency, or runtime ceilings are enforced in v1
 
 ### 10.1 Runtime
 
-The bridge is a long-running Node daemon.
+The bridge is a long-running Python daemon.
 
 It must:
 
-- Use `@a2a-js/sdk`.
+- Send A2A JSON-RPC requests and validate task responses.
 - Watch `factory/teams/*/inbox/`.
 - Watch `factory/teams/*/HALT.flag`.
 - Expose `POST /a2a/push`.
@@ -519,7 +519,7 @@ The CLI must call the same underlying dispatch surface as Hermes tools.
 - Copy `bus_template/` to the selected project `factory/`.
 - Copy remote team templates into `~/.hermes/harness/templates/`.
 - Install Python package in editable mode.
-- Install and build the Node bridge.
+- Install the Python bridge console script.
 - Initialize SQLite schema.
 - Configure `.env` loading from outside `factory/`.
 - Configure public HTTPS ingress and write `BOSS_PUSH_URL`.
@@ -634,7 +634,7 @@ Deliverables:
 - `README.md`.
 - `install.sh` stub.
 - Python package structure.
-- Node bridge package structure.
+- Python bridge package structure.
 - Initial SQLite schema.
 - `.env` loader for secrets outside `factory/`.
 - Public HTTPS ingress configuration contract.
@@ -643,7 +643,7 @@ Deliverables:
 Acceptance criteria:
 
 - `pip install -e .` works for Python package.
-- `pnpm install` and bridge TypeScript build are wired.
+- `harness-a2a-bridge --help` works after editable install.
 - Schema files include assignments, events, and substrate handles.
 - Installer refuses to continue without configured external `.env` path and public HTTPS push URL.
 - Implementation records whether `hermes serve --a2a-port` exists or a wrapper server must be built.
