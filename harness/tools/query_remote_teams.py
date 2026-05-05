@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> dict:
     _factory, db_path = paths(args)
-    cutoff = (datetime.now(UTC) - timedelta(minutes=args.stale_minutes)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    cutoff = (datetime.now(UTC) - timedelta(minutes=args.stale_minutes)).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     where = "WHERE h.team_name = ?" if args.team else ""
     params = (args.team,) if args.team else ()
     with db.session(db_path) as conn:

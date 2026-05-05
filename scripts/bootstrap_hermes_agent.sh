@@ -10,6 +10,8 @@ CODEX_MODEL="${HERMES_HARNESS_CODEX_MODEL:-gpt-5.3-codex}"
 CODEX_BASE_URL="${HERMES_CODEX_BASE_URL:-https://chatgpt.com/backend-api/codex}"
 BACKUP_ROOT="${HERMES_BOOTSTRAP_BACKUP_ROOT:-/private/tmp}"
 
+export PATH="$HOME/.local/bin:$PATH"
+
 read_lock() {
   python3 - "$LOCK_FILE" "$1" <<'PY'
 import json
@@ -103,6 +105,10 @@ git -C "$HERMES_INSTALL_DIR" checkout --detach "$PIN_COMMIT"
 
 if [ ! -x "$HERMES_INSTALL_DIR/venv/bin/python" ]; then
   python3 -m venv "$HERMES_INSTALL_DIR/venv"
+fi
+
+if ! "$HERMES_INSTALL_DIR/venv/bin/python" -m pip --version >/dev/null 2>&1; then
+  "$HERMES_INSTALL_DIR/venv/bin/python" -m ensurepip --upgrade
 fi
 
 if command -v uv >/dev/null 2>&1; then

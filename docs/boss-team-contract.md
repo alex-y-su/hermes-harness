@@ -79,4 +79,16 @@ curl -X POST http://127.0.0.1:8080/ \
 
 The manifest's `profiles` list intentionally contains only the public boss endpoint. `internal_profiles` lists the other local roles for auditability without publishing their bearer tokens or URLs as user-facing agents.
 
+For a plain host or VM deployment, use the native systemd installer instead of Docker:
+
+```bash
+HERMES_HOME=/opt/hermes-home \
+FACTORY_DIR=/factory \
+CODEX_HOME="$HOME/.codex" \
+HERMES_A2A_PUBLIC_URL=https://a2a211.likeclaw.ai/ \
+scripts/install_native_systemd.sh
+```
+
+That script installs the pinned official Hermes Agent checkout, imports Codex OAuth into every boss-team profile, writes the A2A manifest, and installs four host services: `hermes-boss-a2a`, `hermes-boss-gateway`, `hermes-bridge`, and `hermes-viewer`.
+
 The Docker hub currently represents this contract as six tenants. The current hub schema does not store arbitrary role metadata, so the tenant identity is encoded through `id`, `displayName`, `publicHost`, and `auth.jwtSubjects`. It does not yet model the full local filesystem profile homes or cron registrations.

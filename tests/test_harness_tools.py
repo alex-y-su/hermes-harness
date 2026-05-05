@@ -63,6 +63,7 @@ def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
     digest = query_remote_teams.run(base_args(tmp_path, team=None, stale_minutes=5, json=True))
     assert digest["teams"][0]["team_name"] == "dev"
     assert digest["teams"][0]["active_assignments"] == 1
+    assert digest["stale"] == []
 
     sunset_result = asyncio.run(
         sunset_team.run(base_args(tmp_path, team="dev", dry_run=True, no_archive=False))
@@ -72,3 +73,27 @@ def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
     with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
         handle = conn.execute("SELECT status FROM substrate_handles WHERE team_name = 'dev'").fetchone()
     assert handle["status"] == "archived"
+
+
+def test_tools_default_factory_uses_factory_dir_env(tmp_path: Path, monkeypatch) -> None:
+    factory = tmp_path / "mounted-factory"
+    monkeypatch.delenv("HARNESS_FACTORY", raising=False)
+    monkeypatch.setenv("FACTORY_DIR", str(factory))
+
+    spawn_result = asyncio.run(
+        spawn_team.run(
+            spawn_team.build_parser().parse_args(
+                [
+                    "chat-created",
+                    "--substrate",
+                    "external",
+                    "--dry-run",
+                    "--agent-card-url",
+                    "http://team.example/.well-known/agent-card.json",
+                ]
+            )
+        )
+    )
+
+    assert Path(spawn_result["path"]).is_relative_to(factory)
+    assert (factory / "teams" / "chat-created" / "status.json").exists()

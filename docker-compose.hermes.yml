@@ -7,6 +7,7 @@ services:
     environment:
       CODEX_HOME: /codex-auth
       FACTORY_DIR: /factory
+      HARNESS_FACTORY: /factory
       HERMES_A2A_BASE_PORT: "8080"
       HERMES_A2A_BIND_HOST: 0.0.0.0
       HERMES_A2A_PUBLIC_HOST: 127.0.0.1

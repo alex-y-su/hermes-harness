@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -263,7 +264,9 @@ Synthesize the team work into the final answer. Requirements:
 def score_result(role_outputs: dict[str, str], bridge_report: dict[str, Any], boss_output: str) -> dict[str, bool]:
     lower = boss_output.lower()
     role_markers = {
-        role: bool(re.search(rf"\bteam_member\b\s*:?\s*{re.escape(role)}\b", output, re.IGNORECASE))
+        role: bool(
+            re.search(rf"\bteam_member\b\s*:?\s*(?:[-*]\s*)?{re.escape(role)}\b", output, re.IGNORECASE)
+        )
         for role, output in role_outputs.items()
     }
     boss_mentions = {
@@ -348,10 +351,12 @@ def run_test(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a real boss-team intelligence test in Docker.")
+    hermes_home = Path(os.getenv("HERMES_HOME", "/opt/hermes-home"))
+    hermes_bin = os.getenv("HERMES_BIN") or shutil.which("hermes") or str(Path.home() / ".local/bin/hermes")
+    parser = argparse.ArgumentParser(description="Run a real boss-team intelligence test.")
     parser.add_argument("--factory-dir", default=os.getenv("FACTORY_DIR", "/factory"))
-    parser.add_argument("--manifest", default=os.getenv("HERMES_A2A_MANIFEST", "/opt/hermes-home/a2a-team.json"))
-    parser.add_argument("--hermes-bin", default=os.getenv("HERMES_BIN", "/root/.local/bin/hermes"))
+    parser.add_argument("--manifest", default=os.getenv("HERMES_A2A_MANIFEST", str(hermes_home / "a2a-team.json")))
+    parser.add_argument("--hermes-bin", default=hermes_bin)
     parser.add_argument("--model", default=os.getenv("HERMES_HARNESS_CODEX_MODEL", "gpt-5.3-codex"))
     parser.add_argument("--timeout-seconds", type=int, default=int(os.getenv("HERMES_TEAM_TEST_TIMEOUT_SECONDS", "900")))
     parser.add_argument("--test-id", default="")

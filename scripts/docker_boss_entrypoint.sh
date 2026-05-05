@@ -6,8 +6,9 @@ HERMES_HOME="${HERMES_HOME:-/opt/hermes-home}"
 HERMES_INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 FACTORY_DIR="${FACTORY_DIR:-/factory}"
 CODEX_HOME="${CODEX_HOME:-/codex-auth}"
+HARNESS_FACTORY="${HARNESS_FACTORY:-$FACTORY_DIR}"
 
-export ROOT_DIR HERMES_HOME HERMES_INSTALL_DIR FACTORY_DIR CODEX_HOME
+export ROOT_DIR HERMES_HOME HERMES_INSTALL_DIR FACTORY_DIR CODEX_HOME HARNESS_FACTORY
 export HERMES_BOOTSTRAP_BACKUP_ROOT="${HERMES_BOOTSTRAP_BACKUP_ROOT:-/tmp}"
 export HERMES_BOOTSTRAP_FORCE_PIN="${HERMES_BOOTSTRAP_FORCE_PIN:-1}"
 export HERMES_A2A_BASE_PORT="${HERMES_A2A_BASE_PORT:-8080}"
@@ -40,6 +41,13 @@ if [ -x "$HERMES_INSTALL_DIR/venv/bin/python" ] \
   && ! find /root/.cache/ms-playwright -maxdepth 1 -type d -name 'chromium-*' 2>/dev/null | grep -q .; then
   mkdir -p /root/.cache/ms-playwright
   python3 -m playwright install chromium
+fi
+
+if [ "${HERMES_START_GATEWAY:-1}" = "1" ]; then
+  mkdir -p "$HERMES_HOME/profiles/boss"
+  "$HERMES_BIN" --profile boss gateway run --accept-hooks \
+    > "$HERMES_HOME/profiles/boss/gateway.log" 2>&1 &
+  echo "$!" > "$HERMES_HOME/profiles/boss/gateway.pid"
 fi
 
 exec env \

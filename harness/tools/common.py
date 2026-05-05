@@ -9,7 +9,11 @@ from harness.factory import factory_path
 
 
 def add_factory_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--factory", default=os.getenv("HARNESS_FACTORY", "factory"), help="Hermes factory path")
+    parser.add_argument(
+        "--factory",
+        default=os.getenv("HARNESS_FACTORY") or os.getenv("FACTORY_DIR", "factory"),
+        help="Hermes factory path",
+    )
     parser.add_argument("--db", default=None, help="SQLite database path; defaults to <factory>/harness.sqlite3")
 
 
