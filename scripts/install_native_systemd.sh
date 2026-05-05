@@ -25,8 +25,7 @@ SILVERBULLET_ENV_FILE="${SILVERBULLET_ENV_FILE:-$ROOT_DIR/.silverbullet.env}"
 SILVERBULLET_HOST="${SILVERBULLET_HOST:-0.0.0.0}"
 SILVERBULLET_PORT="${SILVERBULLET_PORT:-8090}"
 SILVERBULLET_SPACE_DIR="${SILVERBULLET_SPACE_DIR:-/var/lib/hermes/space}"
-SILVERBULLET_BIN="${SILVERBULLET_BIN:-$SERVICE_HOME/.deno/bin/deno}"
-SILVERBULLET_ENTRYPOINT="${SILVERBULLET_ENTRYPOINT:-https://get.silverbullet.md}"
+SILVERBULLET_BIN="${SILVERBULLET_BIN:-$SERVICE_HOME/.deno/bin/silverbullet}"
 DENO_BIN="${DENO_BIN:-$SERVICE_HOME/.deno/bin/deno}"
 HERMES_DOCS_DIR="${HERMES_DOCS_DIR:-$ROOT_DIR/docs}"
 HERMES_TEMPLATES_DIR="${HERMES_TEMPLATES_DIR:-$ROOT_DIR/bus_template}"
@@ -51,7 +50,7 @@ sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$FACTORY_DIR" "$HERMES_HOME" "$SILV
 if [ ! -x "$DENO_BIN" ]; then
   curl -fsSL https://deno.land/install.sh | DENO_INSTALL="$SERVICE_HOME/.deno" sh -s -- -y
 fi
-"$DENO_BIN" cache --unstable-kv --unstable-worker-options "$SILVERBULLET_ENTRYPOINT"
+"$DENO_BIN" install -gA -f -n silverbullet --root "$SERVICE_HOME/.deno" jsr:@silverbulletmd/silverbullet
 
 python3 -m venv "$HARNESS_VENV"
 "$HARNESS_VENV/bin/python" -m pip install --upgrade pip setuptools wheel
@@ -193,7 +192,7 @@ Type=simple
 User=$SERVICE_USER
 WorkingDirectory=$SILVERBULLET_SPACE_DIR
 EnvironmentFile=$SILVERBULLET_ENV_FILE
-ExecStart=$SILVERBULLET_BIN run --allow-all --no-config --unstable-kv --unstable-worker-options $SILVERBULLET_ENTRYPOINT --hostname $SILVERBULLET_HOST --port $SILVERBULLET_PORT $SILVERBULLET_SPACE_DIR
+ExecStart=$SILVERBULLET_BIN --hostname $SILVERBULLET_HOST --port $SILVERBULLET_PORT $SILVERBULLET_SPACE_DIR
 BindPaths=$HERMES_DOCS_DIR:$SILVERBULLET_SPACE_DIR
 BindPaths=$HERMES_TEMPLATES_DIR:$SILVERBULLET_SPACE_DIR/templates
 BindReadOnlyPaths=-$HERMES_TEAMS_DIR:$SILVERBULLET_SPACE_DIR/teams
