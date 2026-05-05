@@ -68,7 +68,12 @@ async def run_for_assignment(
     transport = read_json(team_dir / "transport.json")
     resolver = secret_resolver or SecretResolver(env_path)
     remote_env = build_remote_env(transport, resolver, team)
-    driver = build_driver("e2b", dry_run=dry_run, remote_env=remote_env)
+    driver = build_driver(
+        "e2b",
+        dry_run=dry_run,
+        remote_env=remote_env,
+        api_key=resolver.resolve("env://E2B_API_KEY"),
+    )
     handle = await driver.provision(team, team_dir, template, timeout_seconds)
     handle = type(handle)(
         team_name=handle.team_name,

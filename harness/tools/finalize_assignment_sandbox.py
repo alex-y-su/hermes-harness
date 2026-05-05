@@ -48,6 +48,7 @@ async def finalize_assignment(
     assignment_id: str,
     terminal_state: str = "completed",
     dry_run: bool = False,
+    api_key: str | None = None,
 ) -> dict[str, str]:
     team_dir = team_path(factory, team)
     with db.session(db_path) as conn:
@@ -65,7 +66,7 @@ async def finalize_assignment(
         should_dry_run = dry_run or bool(metadata.get("dry_run"))
         db.mark_assignment_sandbox_terminal(conn, assignment_id, terminal_state)
 
-    driver = build_driver(handle.substrate, dry_run=should_dry_run)
+    driver = build_driver(handle.substrate, dry_run=should_dry_run, api_key=api_key)
     archive_path = factory / "archive" / "assignment_sandboxes" / f"{team}_{assignment_id}_{_timestamp()}"
     if not should_dry_run:
         await driver.sync_out(handle, team_dir)

@@ -157,13 +157,13 @@ def process_push(
             path.write_text(artifact_text(artifact), encoding="utf-8")
             written.append(path)
         db.mark_terminal(assignment_id=assignment_id, status="completed", completed_path=written[0] if written else None)
-        _finalize_assignment_sandbox_if_present(db, factory_dir, str(team_name), assignment_id, "completed")
+        _finalize_assignment_sandbox_if_present(db, secrets, factory_dir, str(team_name), assignment_id, "completed")
     elif state == "failed" and assignment_id:
         escalation_dir = ensure_dir(factory_dir / "escalations")
         path = escalation_dir / f"{team_name}_{assignment_id}_failed.md"
         path.write_text(f"# failed: {team_name}\n\n{body.get('message') or json.dumps(body, indent=2, sort_keys=True)}\n", encoding="utf-8")
         db.mark_terminal(assignment_id=assignment_id, status="failed")
-        _finalize_assignment_sandbox_if_present(db, factory_dir, str(team_name), assignment_id, "failed")
+        _finalize_assignment_sandbox_if_present(db, secrets, factory_dir, str(team_name), assignment_id, "failed")
         db.append_event(
             team_name=str(team_name),
             assignment_id=assignment_id,
@@ -175,13 +175,14 @@ def process_push(
         )
     elif state == "canceled" and assignment_id:
         db.mark_terminal(assignment_id=assignment_id, status="canceled")
-        _finalize_assignment_sandbox_if_present(db, factory_dir, str(team_name), assignment_id, "canceled")
+        _finalize_assignment_sandbox_if_present(db, secrets, factory_dir, str(team_name), assignment_id, "canceled")
 
     return {"status": 202, "body": {"ok": True}}
 
 
 def _finalize_assignment_sandbox_if_present(
     db: BridgeDb,
+    secrets: SecretResolver,
     factory_dir: Path,
     team_name: str,
     assignment_id: str,
@@ -201,5 +202,6 @@ def _finalize_assignment_sandbox_if_present(
             assignment_id=assignment_id,
             terminal_state=terminal_state,
             dry_run=bool(metadata.get("dry_run")),
+            api_key=secrets.resolve("env://E2B_API_KEY"),
         )
     )

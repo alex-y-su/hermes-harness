@@ -12,9 +12,10 @@ def build_driver(
     dry_run: bool = False,
     agent_card_url: str | None = None,
     remote_env: dict[str, str] | None = None,
+    api_key: str | None = None,
 ):
     if substrate == "external":
         return ExternalSubstrateDriver(agent_card_url=agent_card_url, dry_run=dry_run)
     if substrate == "e2b":
-        return E2BDriver(dry_run=dry_run, remote_env=remote_env)
+        return E2BDriver(dry_run=dry_run, remote_env=remote_env, api_key=api_key)
     raise ValueError(f"unsupported substrate: {substrate}")
