@@ -102,7 +102,10 @@ def test_bridge_provisions_per_assignment_e2b_before_dispatch(tmp_path: Path, mo
     team_dir = factory_dir / "teams" / "e2bdev"
     (team_dir / "inbox").mkdir(parents=True)
     (team_dir / "outbox").mkdir()
-    (team_dir / "status.json").write_text(json.dumps({"template": "single-agent-team"}), encoding="utf-8")
+    (team_dir / "status.json").write_text(
+        json.dumps({"template": "single-agent-team", "blueprint": "dev"}),
+        encoding="utf-8",
+    )
 
     env_path = tmp_path / "bridge.env"
     env_path.write_text(
