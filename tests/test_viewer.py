@@ -7,6 +7,7 @@ from pathlib import Path
 from harness import db
 from harness.tools import dispatch_team, spawn_team
 from harness.viewer import auth
+from harness.viewer.server import APP_HTML
 from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, team_detail
 
 
@@ -16,6 +17,13 @@ def test_viewer_session_cookie_round_trip() -> None:
     assert not auth.verify_session("other-secret", cookie, max_age_seconds=10**12)
     assert auth.code_matches("open-sesame", "open-sesame")
     assert not auth.code_matches("open-sesame", "wrong")
+
+
+def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
+    assert "dashboard-graph" in APP_HTML
+    assert "Open full graph" in APP_HTML
+    assert 'path === "/graph"' in APP_HTML
+    assert "renderOrgGraphSvg({maxAssignmentsPerTeam: 2" in APP_HTML
 
 
 def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:

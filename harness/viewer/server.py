@@ -64,6 +64,9 @@ APP_HTML = r"""<!doctype html>
     .org-root { fill: #1f3c36; stroke: #67d4b4; }
     .org-team { fill: #17243a; stroke: #8ab4ff; }
     .org-assignment { fill: #251d34; stroke: #c9a7ff; }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 22px 0 10px; }
+    .section-head h2 { margin: 0; }
+    .dashboard-graph svg { min-height: 420px; }
     @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } }
   </style>
 </head>
@@ -116,6 +119,13 @@ APP_HTML = r"""<!doctype html>
           <div class="card"><div class="metric">${d.counts.teams}</div><div class="muted">Teams</div></div>
           <div class="card"><div class="metric">${d.counts.hubs}</div><div class="muted">Hubs</div></div>
           <div class="card"><div class="metric">${d.counts.active_assignments}</div><div class="muted">Active assignments</div></div>
+        </section>
+        <div class="section-head">
+          <h2>Org Graph</h2>
+          <a class="pill" href="#/graph">Open full graph</a>
+        </div>
+        <section class="dashboard-graph">
+          ${renderOrgGraphSvg({maxAssignmentsPerTeam: 2, minHeight: 420})}
         </section>
         <h2>Teams</h2>
         ${teamTable(d.teams)}
@@ -194,8 +204,10 @@ APP_HTML = r"""<!doctype html>
       const teams = state.dashboard.teams.filter(t => t.hub === name);
       app.innerHTML = `<h1>Hub: ${esc(name)}</h1><h2>Subteams</h2>${teamTable(teams)}`;
     }
-    async function renderGraph() {
+    function renderOrgGraphSvg(options = {}) {
       const d = state.dashboard;
+      const maxAssignmentsPerTeam = options.maxAssignmentsPerTeam ?? 4;
+      const minHeight = options.minHeight ?? 560;
       const assignmentsByTeam = {};
       for (const assignment of d.assignments || []) {
         (assignmentsByTeam[assignment.team_name] ||= []).push(assignment);
@@ -216,7 +228,7 @@ APP_HTML = r"""<!doctype html>
         };
         nodes.push(teamNode);
         edges.push({from: root, to: teamNode});
-        (assignmentsByTeam[team.team_name] || []).slice(0, 4).forEach((assignment, j) => {
+        (assignmentsByTeam[team.team_name] || []).slice(0, maxAssignmentsPerTeam).forEach((assignment, j) => {
           const assignmentNode = {
             x, y: teamNode.y + cardH + 54 + j * (cardH + 14), w: cardW, h: cardH,
             label: assignment.assignment_id,
@@ -228,7 +240,7 @@ APP_HTML = r"""<!doctype html>
           edges.push({from: teamNode, to: assignmentNode});
         });
       });
-      const height = Math.max(560, Math.max(...nodes.map(n => n.y + n.h)) + 40);
+      const height = Math.max(minHeight, Math.max(...nodes.map(n => n.y + n.h)) + 40);
       const nodeMarkup = nodes.map(n => `
         <a href="${n.href}">
           <rect class="org-card org-${n.kind}" x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}"></rect>
@@ -241,11 +253,14 @@ APP_HTML = r"""<!doctype html>
         const mid = y1 + (y2 - y1) / 2;
         return `<path class="edge" d="M ${x1} ${y1} V ${mid} H ${x2} V ${y2}"></path>`;
       }).join("");
+      return `<svg viewBox="0 0 ${width} ${height}">
+        ${edgeMarkup}
+        ${nodeMarkup}
+      </svg>`;
+    }
+    async function renderGraph() {
       app.innerHTML = `<h1>Org Graph</h1><p class="muted">Boss team, connected remote teams, and their recent assignments.</p>
-        <svg viewBox="0 0 ${width} ${height}">
-          ${edgeMarkup}
-          ${nodeMarkup}
-        </svg>`;
+        ${renderOrgGraphSvg({maxAssignmentsPerTeam: 4, minHeight: 560})}`;
     }
     async function route() {
       try {
