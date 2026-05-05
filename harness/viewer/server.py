@@ -57,7 +57,13 @@ APP_HTML = r"""<!doctype html>
     tr:last-child td { border-bottom: 0; }
     pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); background: #0d1013; padding: 14px; border-radius: 8px; max-height: 520px; overflow: auto; }
     .split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
-    svg { width: 100%; min-height: 560px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; }
+    .graph-wrap { position: relative; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; overflow: hidden; touch-action: none; }
+    .graph-wrap svg { display: block; width: 100%; height: 100%; cursor: grab; user-select: none; }
+    .graph-wrap.dragging svg { cursor: grabbing; }
+    .graph-wrap.dragging a { pointer-events: none; }
+    .graph-controls { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; z-index: 2; }
+    .graph-controls button { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); background: #15191d; color: var(--text); border-radius: 6px; cursor: pointer; font-size: 16px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+    .graph-controls button:hover { background: #1c2127; }
     .node-label { font-size: 13px; font-weight: 650; fill: var(--text); pointer-events: none; }
     .node-meta { font-size: 11px; fill: var(--muted); pointer-events: none; }
     .edge { stroke: #47525d; stroke-width: 1.4; fill: none; }
@@ -67,7 +73,6 @@ APP_HTML = r"""<!doctype html>
     .org-assignment { fill: #251d34; stroke: #c9a7ff; }
     .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 22px 0 10px; }
     .section-head h2 { margin: 0; }
-    .dashboard-graph svg { min-height: 420px; }
     .tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin: 14px 0 18px; }
     .tabs a { display: inline-flex; align-items: center; min-height: 34px; padding: 7px 10px; color: var(--muted); border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; }
     .tabs a.active { color: var(--accent); border-color: var(--line); background: var(--panel); }
@@ -154,7 +159,7 @@ APP_HTML = r"""<!doctype html>
           <a class="pill" href="#/graph">Open full graph</a>
         </div>
         <section class="dashboard-graph">
-          ${renderOrgGraphSvg({maxAssignmentsPerTeam: 2, minHeight: 420})}
+          ${renderOrgGraphSvg({maxAssignmentsPerTeam: 2, viewportHeight: 420})}
         </section>
         <h2>Waiting on User</h2>
         ${userRequestTable(d.user_requests || [])}
@@ -165,6 +170,7 @@ APP_HTML = r"""<!doctype html>
         <h2>Recent Events</h2>
         ${eventTable(d.recent_events)}
       `;
+      setupOrgGraphInteractions();
     }
     function teamTable(teams) {
       return `<table><thead><tr><th>Team</th><th>Hub</th><th>State</th><th>Substrate</th><th>Active</th><th>Retry</th><th>Stale</th><th>User</th><th>Last Event</th></tr></thead><tbody>
@@ -340,40 +346,51 @@ APP_HTML = r"""<!doctype html>
     function renderOrgGraphSvg(options = {}) {
       const d = state.dashboard;
       const maxAssignmentsPerTeam = options.maxAssignmentsPerTeam ?? 4;
-      const minHeight = options.minHeight ?? 560;
+      const viewportHeight = options.viewportHeight ?? 600;
       const assignmentsByTeam = {};
       for (const assignment of d.assignments || []) {
         (assignmentsByTeam[assignment.team_name] ||= []).push(assignment);
       }
       const teams = [...(d.teams || [])].sort((a, b) => a.team_name.localeCompare(b.team_name));
-      const cardW = 220, cardH = 72, xGap = 40, yGap = 90;
-      const width = Math.max(920, teams.length * (cardW + xGap) + xGap);
-      const root = {x: width / 2 - cardW / 2, y: 32, w: cardW, h: cardH, label: "Boss Team", meta: "public coordinator", kind: "root", href: "#/"};
+      const cardW = 220, cardH = 72;
+      const leftPad = 24, topPad = 24;
+      const teamX = leftPad + 60;
+      const rowGap = 22;
+      const aGap = 18;
+      const root = {x: leftPad, y: topPad, w: cardW, h: cardH, label: "Boss Team", meta: "public coordinator", kind: "root", href: "#/"};
+      const teamColTop = topPad + cardH + 50;
       const nodes = [root], edges = [];
+      let maxRight = root.x + cardW;
       teams.forEach((team, i) => {
-        const x = xGap + i * (cardW + xGap);
+        const teamY = teamColTop + i * (cardH + rowGap);
         const teamNode = {
-          x, y: root.y + cardH + yGap, w: cardW, h: cardH,
+          x: teamX, y: teamY, w: cardW, h: cardH,
           label: team.team_name,
           meta: `${team.substrate || "unknown"} · ${team.state || "unknown"}`,
           kind: "team",
           href: linkFor("team", team.team_name)
         };
         nodes.push(teamNode);
-        edges.push({from: root, to: teamNode});
+        edges.push({type: "tree", from: root, to: teamNode});
+        let prev = teamNode;
         (assignmentsByTeam[team.team_name] || []).slice(0, maxAssignmentsPerTeam).forEach((assignment, j) => {
-          const assignmentNode = {
-            x, y: teamNode.y + cardH + 54 + j * (cardH + 14), w: cardW, h: cardH,
+          const aX = teamX + cardW + 50 + j * (cardW + aGap);
+          const aNode = {
+            x: aX, y: teamY, w: cardW, h: cardH,
             label: assignment.assignment_id,
             meta: assignment.status || "unknown",
             kind: "assignment",
             href: linkFor("assignment", assignment.assignment_id)
           };
-          nodes.push(assignmentNode);
-          edges.push({from: teamNode, to: assignmentNode});
+          nodes.push(aNode);
+          edges.push({type: "row", from: prev, to: aNode});
+          prev = aNode;
+          if (aX + cardW > maxRight) maxRight = aX + cardW;
         });
       });
-      const height = Math.max(minHeight, Math.max(...nodes.map(n => n.y + n.h)) + 40);
+      const width = Math.max(900, maxRight + leftPad);
+      const contentBottom = Math.max(...nodes.map(n => n.y + n.h));
+      const height = Math.max(viewportHeight, contentBottom + topPad);
       const nodeMarkup = nodes.map(n => `
         <a href="${n.href}">
           <rect class="org-card org-${n.kind}" x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}"></rect>
@@ -381,19 +398,93 @@ APP_HTML = r"""<!doctype html>
           <text class="node-meta" x="${n.x + 14}" y="${n.y + 50}">${esc(n.meta)}</text>
         </a>`).join("");
       const edgeMarkup = edges.map(e => {
-        const x1 = e.from.x + e.from.w / 2, y1 = e.from.y + e.from.h;
-        const x2 = e.to.x + e.to.w / 2, y2 = e.to.y;
-        const mid = y1 + (y2 - y1) / 2;
-        return `<path class="edge" d="M ${x1} ${y1} V ${mid} H ${x2} V ${y2}"></path>`;
+        if (e.type === "tree") {
+          const x1 = e.from.x + e.from.w / 2;
+          const y1 = e.from.y + e.from.h;
+          const x2 = e.to.x;
+          const y2 = e.to.y + e.to.h / 2;
+          return `<path class="edge" d="M ${x1} ${y1} V ${y2} H ${x2}"></path>`;
+        }
+        const x1 = e.from.x + e.from.w;
+        const y1 = e.from.y + e.from.h / 2;
+        const x2 = e.to.x;
+        const y2 = e.to.y + e.to.h / 2;
+        return `<path class="edge" d="M ${x1} ${y1} H ${x2}"></path>`;
       }).join("");
-      return `<svg viewBox="0 0 ${width} ${height}">
-        ${edgeMarkup}
-        ${nodeMarkup}
-      </svg>`;
+      return `
+        <div class="graph-wrap" data-graph-wrap style="height:${viewportHeight}px">
+          <div class="graph-controls">
+            <button type="button" data-zoom="out" title="Zoom out" aria-label="Zoom out">−</button>
+            <button type="button" data-zoom="reset" title="Reset view" aria-label="Reset view">⟳</button>
+            <button type="button" data-zoom="in" title="Zoom in" aria-label="Zoom in">+</button>
+          </div>
+          <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+            <g class="pan-zoom-layer">
+              ${edgeMarkup}
+              ${nodeMarkup}
+            </g>
+          </svg>
+        </div>`;
+    }
+    let orgGraphAbort = null;
+    const orgGraphState = { tx: 0, ty: 0, scale: 1 };
+    function setupOrgGraphInteractions() {
+      if (orgGraphAbort) orgGraphAbort.abort();
+      orgGraphAbort = new AbortController();
+      const signal = orgGraphAbort.signal;
+      document.querySelectorAll('[data-graph-wrap]').forEach((wrap) => {
+        const svg = wrap.querySelector('svg');
+        const layer = wrap.querySelector('.pan-zoom-layer');
+        if (!svg || !layer) return;
+        const apply = () => layer.setAttribute('transform', `translate(${orgGraphState.tx} ${orgGraphState.ty}) scale(${orgGraphState.scale})`);
+        const zoomAt = (cx, cy, factor) => {
+          const ns = Math.max(0.2, Math.min(4, orgGraphState.scale * factor));
+          const real = ns / orgGraphState.scale;
+          orgGraphState.tx = cx - (cx - orgGraphState.tx) * real;
+          orgGraphState.ty = cy - (cy - orgGraphState.ty) * real;
+          orgGraphState.scale = ns;
+          apply();
+        };
+        apply();
+        wrap.querySelector('[data-zoom="in"]').addEventListener('click', () => zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.2), {signal});
+        wrap.querySelector('[data-zoom="out"]').addEventListener('click', () => zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1 / 1.2), {signal});
+        wrap.querySelector('[data-zoom="reset"]').addEventListener('click', () => { orgGraphState.tx = 0; orgGraphState.ty = 0; orgGraphState.scale = 1; apply(); }, {signal});
+        svg.addEventListener('wheel', (e) => {
+          e.preventDefault();
+          const rect = svg.getBoundingClientRect();
+          zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.1 : 1 / 1.1);
+        }, {signal, passive: false});
+        let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, moved = 0;
+        svg.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          dragging = true; moved = 0;
+          sx = e.clientX; sy = e.clientY;
+          ox = orgGraphState.tx; oy = orgGraphState.ty;
+          wrap.classList.add('dragging');
+          e.preventDefault();
+        }, {signal});
+        window.addEventListener('mousemove', (e) => {
+          if (!dragging) return;
+          const dx = e.clientX - sx, dy = e.clientY - sy;
+          if (Math.hypot(dx, dy) > moved) moved = Math.hypot(dx, dy);
+          orgGraphState.tx = ox + dx;
+          orgGraphState.ty = oy + dy;
+          apply();
+        }, {signal});
+        window.addEventListener('mouseup', () => {
+          if (!dragging) return;
+          dragging = false;
+          wrap.classList.remove('dragging');
+          if (moved > 4) {
+            wrap.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); }, {capture: true, once: true});
+          }
+        }, {signal});
+      });
     }
     async function renderGraph() {
-      app.innerHTML = `<h1>Org Graph</h1>${renderTabs("graph")}<p class="muted">Boss team, connected remote teams, and their recent assignments.</p>
-        ${renderOrgGraphSvg({maxAssignmentsPerTeam: 4, minHeight: 560})}`;
+      app.innerHTML = `<h1>Org Graph</h1>${renderTabs("graph")}<p class="muted">Boss team, connected remote teams, and their recent assignments. Drag to pan, scroll or use buttons to zoom.</p>
+        ${renderOrgGraphSvg({maxAssignmentsPerTeam: 4, viewportHeight: 640})}`;
+      setupOrgGraphInteractions();
     }
     async function route() {
       try {
