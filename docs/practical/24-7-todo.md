@@ -18,17 +18,19 @@ This file tracks remaining work after the first watchdog/orchestrator milestone.
 - Stale assignment and long user-request alert creation in orchestrator.
 - Operator tools for board query, requeue, cancel, stale-team archive, and blocker explanation.
 - Viewer alert counts plus assignment resume/sandbox/alert detail.
+- Blocked E2B assignment sandboxes are kept alive until a TTL.
+- Blocked E2B assignment sandboxes are archived and stopped after TTL as `paused_archived`.
+- Orphaned assignment sandboxes are archived by the orchestrator.
+- `harness-e2b-watchdog` alias runs the orchestrator lifecycle pass.
+- Resolving a user request from a `paused_archived` sandbox records the archive restore source.
+- Per-assignment E2B boot restores workspace files from the archived sandbox source.
 
 ## Remaining Work
 
 ### E2B Lifecycle Policy
 
-- Keep live E2B sandboxes running while assignments are `input-required` or `auth-required`.
-- Add idle TTL for blocked E2B sandboxes.
-- Archive/snapshot blocked sandboxes before stopping them after TTL.
 - Resume live sandbox when still available.
-- Restore or recreate sandbox from archive when the user responds after TTL.
-- Add orphaned sandbox cleanup for sandboxes no longer tied to active assignments.
+- Add richer sandbox health checks beyond DB state.
 
 ### Continuation And Resume
 

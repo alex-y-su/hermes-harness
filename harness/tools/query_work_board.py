@@ -54,6 +54,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         ]
         resumes = [_decode_resume(row) for row in db.list_assignment_resumes(conn)]
+        sandboxes = [dict(row) for row in conn.execute("SELECT * FROM assignment_sandboxes ORDER BY created_at DESC")]
         alerts = [
             dict(row)
             for row in db.list_operator_alerts(conn, status="open")
@@ -69,6 +70,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "counts": {name: len(items) for name, items in board.items()},
         "user_requests": requests,
         "resumes": resumes,
+        "sandboxes": sandboxes,
         "alerts": alerts,
     }
 

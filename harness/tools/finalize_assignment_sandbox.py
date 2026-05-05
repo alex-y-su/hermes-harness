@@ -92,7 +92,7 @@ async def finalize_assignment(
     )
 
     with db.session(db_path) as conn:
-        db.mark_assignment_sandbox_archived(conn, assignment_id)
+        db.mark_assignment_sandbox_archived(conn, assignment_id, archive_path=str(archive_path))
         db.record_event(
             conn,
             team_name=team,

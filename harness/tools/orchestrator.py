@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
 import socket
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from harness import db
+from harness.bridge.secrets import SecretResolver
+from harness.models import SubstrateHandle
+from harness.substrate.factory import build_driver
 from harness.tools.common import add_factory_args, paths
 
 
@@ -24,6 +30,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--holder", default=None)
     parser.add_argument("--stale-minutes", type=int, default=int(os.getenv("HARNESS_ORCHESTRATOR_STALE_MINUTES", "15")))
     parser.add_argument("--user-request-alert-minutes", type=int, default=int(os.getenv("HARNESS_USER_REQUEST_ALERT_MINUTES", "60")))
+    parser.add_argument(
+        "--blocked-sandbox-ttl-minutes",
+        type=int,
+        default=int(os.getenv("HARNESS_BLOCKED_SANDBOX_TTL_MINUTES", "240")),
+    )
+    parser.add_argument(
+        "--orphan-sandbox-ttl-minutes",
+        type=int,
+        default=int(os.getenv("HARNESS_ORPHAN_SANDBOX_TTL_MINUTES", "60")),
+    )
+    parser.add_argument("--env", default=os.getenv("HARNESS_ENV_PATH"))
     parser.add_argument("--lease-ttl-seconds", type=int, default=int(os.getenv("HARNESS_ORCHESTRATOR_LEASE_TTL_SECONDS", "60")))
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--poll-seconds", type=int, default=int(os.getenv("HARNESS_ORCHESTRATOR_POLL_SECONDS", "30")))
@@ -47,8 +64,240 @@ def _alert_id(dedupe_key: str) -> str:
     return f"alert-{hashlib.sha1(dedupe_key.encode('utf-8')).hexdigest()[:16]}"
 
 
+def _timestamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _handle_from_sandbox(row: Any) -> tuple[SubstrateHandle, bool]:
+    handle_data = json.loads(row["handle"])
+    metadata = handle_data.get("metadata") or {}
+    row_metadata = json.loads(row["metadata"] or "{}")
+    dry_run = bool(metadata.get("dry_run") or row_metadata.get("dry_run"))
+    handle = SubstrateHandle(
+        team_name=handle_data["team_name"],
+        substrate=handle_data["substrate"],
+        handle=handle_data["handle"],
+        metadata=metadata,
+    )
+    return handle, dry_run
+
+
+async def _archive_sandbox(
+    *,
+    factory: Path,
+    row: Any,
+    reason: str,
+    env_path: str | None,
+) -> dict[str, Any]:
+    handle, dry_run = _handle_from_sandbox(row)
+    resolver = SecretResolver(env_path)
+    api_key = None if dry_run else resolver.resolve("env://E2B_API_KEY")
+    driver = build_driver(handle.substrate, dry_run=dry_run, api_key=api_key)
+    team_dir = factory / "teams" / row["team_name"]
+    archive_path = factory / "archive" / "assignment_sandboxes" / f"{row['team_name']}_{row['assignment_id']}_{reason}_{_timestamp()}"
+    if not dry_run:
+        await driver.sync_out(handle, team_dir)
+        await driver.cancel(handle)
+    await driver.archive(handle, archive_path)
+    manifest_path = archive_path / "assignment-sandbox.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "team_name": row["team_name"],
+                "assignment_id": row["assignment_id"],
+                "reason": reason,
+                "handle": asdict(handle),
+                "dry_run": dry_run,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {"archive_path": str(archive_path), "manifest_path": str(manifest_path), "dry_run": dry_run}
+
+
+def _run_sandbox_lifecycle(args: argparse.Namespace, *, factory: Path, db_path: Path) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    blocked_ttl_seconds = int(getattr(args, "blocked_sandbox_ttl_minutes", 240)) * 60
+    orphan_cutoff = _cutoff(int(getattr(args, "orphan_sandbox_ttl_minutes", 60)))
+    env_path = getattr(args, "env", None)
+
+    with db.session(db_path) as conn:
+        blocked_rows = list(
+            conn.execute(
+                """
+                SELECT s.*
+                FROM assignment_sandboxes s
+                JOIN team_assignments a ON a.assignment_id = s.assignment_id
+                WHERE a.status IN ('input-required', 'auth-required')
+                  AND s.status NOT IN ('archived', 'paused_archived', 'restored')
+                ORDER BY s.created_at ASC
+                """
+            )
+        )
+        for row in blocked_rows:
+            updated = db.mark_assignment_sandbox_blocked(
+                conn,
+                assignment_id=row["assignment_id"],
+                ttl_seconds=blocked_ttl_seconds,
+            )
+            if updated and row["blocked_since"] is None:
+                db.record_event(
+                    conn,
+                    team_name=row["team_name"],
+                    assignment_id=row["assignment_id"],
+                    source="harness.orchestrator",
+                    kind="assignment-sandbox-blocked",
+                    state="blocked",
+                    metadata={"expires_at": updated["expires_at"]},
+                )
+                actions.append(
+                    {
+                        "action": "sandbox-blocked",
+                        "team_name": row["team_name"],
+                        "assignment_id": row["assignment_id"],
+                        "expires_at": updated["expires_at"],
+                    }
+                )
+
+        due_blocked = list(
+            conn.execute(
+                """
+                SELECT s.*
+                FROM assignment_sandboxes s
+                JOIN team_assignments a ON a.assignment_id = s.assignment_id
+                WHERE a.status IN ('input-required', 'auth-required')
+                  AND s.status NOT IN ('archived', 'paused_archived', 'restored')
+                  AND s.expires_at IS NOT NULL
+                  AND s.expires_at <= CURRENT_TIMESTAMP
+                ORDER BY s.expires_at ASC
+                """
+            )
+        )
+        orphan_rows = list(
+            conn.execute(
+                """
+                SELECT s.*
+                FROM assignment_sandboxes s
+                LEFT JOIN team_assignments a ON a.assignment_id = s.assignment_id
+                WHERE a.assignment_id IS NULL
+                  AND s.status NOT IN ('archived', 'paused_archived', 'restored')
+                  AND s.created_at < ?
+                ORDER BY s.created_at ASC
+                """,
+                (orphan_cutoff,),
+            )
+        )
+
+    for row in due_blocked:
+        try:
+            result = asyncio.run(
+                _archive_sandbox(
+                    factory=factory,
+                    row=row,
+                    reason="blocked-ttl",
+                    env_path=env_path,
+                )
+            )
+            with db.session(db_path) as conn:
+                db.mark_assignment_sandbox_paused_archived(
+                    conn,
+                    assignment_id=row["assignment_id"],
+                    archive_path=result["archive_path"],
+                    restore_source=result["archive_path"],
+                )
+                db.record_event(
+                    conn,
+                    team_name=row["team_name"],
+                    assignment_id=row["assignment_id"],
+                    source="harness.orchestrator",
+                    kind="assignment-sandbox-paused-archived",
+                    state="paused_archived",
+                    payload_path=result["manifest_path"],
+                    metadata={"dry_run": result["dry_run"], "reason": "blocked-ttl"},
+                )
+            actions.append(
+                {
+                    "action": "sandbox-paused-archived",
+                    "team_name": row["team_name"],
+                    "assignment_id": row["assignment_id"],
+                    "archive_path": result["archive_path"],
+                }
+            )
+        except Exception as error:
+            with db.session(db_path) as conn:
+                db.mark_assignment_sandbox_error(conn, assignment_id=row["assignment_id"], error=str(error))
+                dedupe_key = f"sandbox-archive-failed:{row['assignment_id']}"
+                db.upsert_operator_alert(
+                    conn,
+                    alert_id=_alert_id(dedupe_key),
+                    dedupe_key=dedupe_key,
+                    severity="warning",
+                    kind="sandbox-archive-failed",
+                    team_name=row["team_name"],
+                    assignment_id=row["assignment_id"],
+                    title=f"Sandbox archive failed: {row['assignment_id']}",
+                    body=str(error),
+                )
+            actions.append(
+                {
+                    "action": "sandbox-archive-failed",
+                    "team_name": row["team_name"],
+                    "assignment_id": row["assignment_id"],
+                    "error": str(error),
+                }
+            )
+
+    for row in orphan_rows:
+        try:
+            result = asyncio.run(
+                _archive_sandbox(
+                    factory=factory,
+                    row=row,
+                    reason="orphan",
+                    env_path=env_path,
+                )
+            )
+            with db.session(db_path) as conn:
+                db.mark_assignment_sandbox_archived(conn, row["assignment_id"], archive_path=result["archive_path"])
+                db.record_event(
+                    conn,
+                    team_name=row["team_name"],
+                    assignment_id=row["assignment_id"],
+                    source="harness.orchestrator",
+                    kind="assignment-sandbox-orphan-archived",
+                    state="archived",
+                    payload_path=result["manifest_path"],
+                    metadata={"dry_run": result["dry_run"], "reason": "orphan"},
+                )
+            actions.append(
+                {
+                    "action": "orphan-sandbox-archived",
+                    "team_name": row["team_name"],
+                    "assignment_id": row["assignment_id"],
+                    "archive_path": result["archive_path"],
+                }
+            )
+        except Exception as error:
+            with db.session(db_path) as conn:
+                db.mark_assignment_sandbox_error(conn, assignment_id=row["assignment_id"], error=str(error))
+            actions.append(
+                {
+                    "action": "orphan-sandbox-archive-failed",
+                    "team_name": row["team_name"],
+                    "assignment_id": row["assignment_id"],
+                    "error": str(error),
+                }
+            )
+
+    return actions
+
+
 def run_once(args: argparse.Namespace) -> dict[str, Any]:
-    _factory, db_path = paths(args)
+    factory, db_path = paths(args)
     holder = _holder(getattr(args, "holder", None))
     lease_ttl = int(getattr(args, "lease_ttl_seconds", 60))
     stale_cutoff = _cutoff(int(getattr(args, "stale_minutes", 15)))
@@ -228,6 +477,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
                 }
             )
 
+    actions.extend(_run_sandbox_lifecycle(args, factory=factory, db_path=db_path))
     return {"holder": holder, "actions": actions, "count": len(actions)}
 
 

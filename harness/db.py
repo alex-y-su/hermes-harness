@@ -721,14 +721,97 @@ def mark_assignment_sandbox_terminal(conn: sqlite3.Connection, assignment_id: st
     )
 
 
-def mark_assignment_sandbox_archived(conn: sqlite3.Connection, assignment_id: str) -> None:
+def mark_assignment_sandbox_archived(
+    conn: sqlite3.Connection,
+    assignment_id: str,
+    archive_path: str | None = None,
+) -> None:
     conn.execute(
         """
         UPDATE assignment_sandboxes
-        SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+        SET status = 'archived',
+            archived_at = CURRENT_TIMESTAMP,
+            archive_path = COALESCE(?, archive_path)
         WHERE assignment_id = ?
         """,
+        (archive_path, assignment_id),
+    )
+
+
+def mark_assignment_sandbox_blocked(
+    conn: sqlite3.Connection,
+    *,
+    assignment_id: str,
+    ttl_seconds: int,
+    now: datetime | None = None,
+) -> sqlite3.Row | None:
+    conn.execute(
+        """
+        UPDATE assignment_sandboxes
+        SET status = CASE WHEN status = 'booted' THEN 'blocked' ELSE status END,
+            blocked_since = COALESCE(blocked_since, ?),
+            expires_at = COALESCE(expires_at, ?),
+            idle_since = COALESCE(idle_since, ?),
+            last_heartbeat_at = COALESCE(last_heartbeat_at, ?)
+        WHERE assignment_id = ?
+          AND status NOT IN ('archived', 'paused_archived')
+        """,
+        (
+            utc_timestamp(now),
+            utc_after(ttl_seconds, now),
+            utc_timestamp(now),
+            utc_timestamp(now),
+            assignment_id,
+        ),
+    )
+    return load_assignment_sandbox(conn, assignment_id)
+
+
+def mark_assignment_sandbox_active(conn: sqlite3.Connection, assignment_id: str) -> None:
+    conn.execute(
+        """
+        UPDATE assignment_sandboxes
+        SET status = CASE WHEN status IN ('blocked', 'idle') THEN 'booted' ELSE status END,
+            last_heartbeat_at = CURRENT_TIMESTAMP,
+            idle_since = NULL,
+            blocked_since = NULL,
+            expires_at = NULL,
+            last_error = NULL
+        WHERE assignment_id = ?
+          AND status NOT IN ('archived', 'paused_archived')
+        """,
         (assignment_id,),
+    )
+
+
+def mark_assignment_sandbox_paused_archived(
+    conn: sqlite3.Connection,
+    *,
+    assignment_id: str,
+    archive_path: str,
+    restore_source: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE assignment_sandboxes
+        SET status = 'paused_archived',
+            archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
+            archive_path = ?,
+            restore_source = ?
+        WHERE assignment_id = ?
+        """,
+        (archive_path, restore_source or archive_path, assignment_id),
+    )
+
+
+def mark_assignment_sandbox_error(conn: sqlite3.Connection, *, assignment_id: str, error: str) -> None:
+    conn.execute(
+        """
+        UPDATE assignment_sandboxes
+        SET last_error = ?
+        WHERE assignment_id = ?
+        """,
+        (error, assignment_id),
     )
 
 

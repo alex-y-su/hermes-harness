@@ -262,16 +262,24 @@ class BridgeDb:
             )
             self.conn.commit()
 
-    def mark_assignment_sandbox_archived(self, assignment_id: str) -> None:
+    def mark_assignment_sandbox_archived(self, assignment_id: str, archive_path: str | None = None) -> None:
         with self.lock:
-            self.conn.execute(
-                """
-                UPDATE assignment_sandboxes
-                SET status = 'archived', archived_at = CURRENT_TIMESTAMP
-                WHERE assignment_id = ?
-                """,
-                (assignment_id,),
+            db.mark_assignment_sandbox_archived(self.conn, assignment_id, archive_path=archive_path)
+            self.conn.commit()
+
+    def mark_assignment_sandbox_blocked(self, *, assignment_id: str, ttl_seconds: int) -> sqlite3.Row | None:
+        with self.lock:
+            row = db.mark_assignment_sandbox_blocked(
+                self.conn,
+                assignment_id=assignment_id,
+                ttl_seconds=ttl_seconds,
             )
+            self.conn.commit()
+            return row
+
+    def mark_assignment_sandbox_active(self, assignment_id: str) -> None:
+        with self.lock:
+            db.mark_assignment_sandbox_active(self.conn, assignment_id)
             self.conn.commit()
 
     def upsert_approval_request(

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from harness import db
+from harness.models import SubstrateHandle
 from harness.tools import (
     ack_alert,
     cancel_assignment,
@@ -13,6 +14,7 @@ from harness.tools import (
     orchestrator,
     query_alerts,
     query_remote_teams,
+    run_soak,
     query_user_requests,
     query_work_board,
     requeue_assignment,
@@ -21,6 +23,7 @@ from harness.tools import (
     spawn_team,
     sunset_team,
 )
+from harness.tools.run_assignment_sandbox import run_for_assignment
 
 
 def args(**kwargs):
@@ -262,6 +265,287 @@ def test_orchestrator_does_not_mark_waiting_on_user_as_stale(tmp_path: Path) -> 
         row = conn.execute("SELECT status, blocked_by FROM team_assignments WHERE assignment_id = 'blocked-1'").fetchone()
     assert row["status"] == "input-required"
     assert row["blocked_by"] == "blocked-1:input-required"
+
+
+def test_orchestrator_keeps_blocked_sandbox_until_ttl_then_archives(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "dev"
+    (team_dir / "inbox").mkdir(parents=True)
+    (team_dir / "workspace.txt").write_text("important state\n", encoding="utf-8")
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    handle = SubstrateHandle(
+        team_name="dev",
+        substrate="e2b",
+        handle="dry-run-e2b://blocked-1",
+        metadata={"dry_run": True, "workspace_path": str(team_dir)},
+    )
+    with db.session(db_path) as conn:
+        db.upsert_assignment(
+            conn,
+            assignment_id="blocked-1",
+            team_name="dev",
+            status="input-required",
+            inbox_path=str(team_dir / "inbox" / "blocked-1.md"),
+            a2a_task_id="task-blocked",
+        )
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="blocked-1",
+            team_name="dev",
+            handle=handle,
+            agent_card_url="http://sandbox.example/card.json",
+            status="booted",
+            metadata={"dry_run": True},
+        )
+
+    first = orchestrator.run_once(
+        base_args(
+            tmp_path,
+            holder="test-orchestrator",
+            stale_minutes=1,
+            user_request_alert_minutes=9999,
+            blocked_sandbox_ttl_minutes=60,
+            orphan_sandbox_ttl_minutes=60,
+            lease_ttl_seconds=30,
+            env=None,
+            json=True,
+        )
+    )
+    assert any(action["action"] == "sandbox-blocked" for action in first["actions"])
+    with db.session(db_path) as conn:
+        row = conn.execute("SELECT status, blocked_since, expires_at FROM assignment_sandboxes WHERE assignment_id = 'blocked-1'").fetchone()
+    assert row["status"] == "blocked"
+    assert row["blocked_since"] is not None
+    assert row["expires_at"] is not None
+
+    with db.session(db_path) as conn:
+        conn.execute("UPDATE assignment_sandboxes SET expires_at = '2000-01-01 00:00:00' WHERE assignment_id = 'blocked-1'")
+
+    second = orchestrator.run_once(
+        base_args(
+            tmp_path,
+            holder="test-orchestrator",
+            stale_minutes=1,
+            user_request_alert_minutes=9999,
+            blocked_sandbox_ttl_minutes=60,
+            orphan_sandbox_ttl_minutes=60,
+            lease_ttl_seconds=30,
+            env=None,
+            json=True,
+        )
+    )
+    archive_action = next(action for action in second["actions"] if action["action"] == "sandbox-paused-archived")
+    with db.session(db_path) as conn:
+        row = conn.execute("SELECT status, archive_path, restore_source FROM assignment_sandboxes WHERE assignment_id = 'blocked-1'").fetchone()
+    assert row["status"] == "paused_archived"
+    assert row["archive_path"] == archive_action["archive_path"]
+    assert row["restore_source"] == archive_action["archive_path"]
+    assert (Path(row["archive_path"]) / "workspace.txt").read_text(encoding="utf-8") == "important state\n"
+
+
+def test_orchestrator_archives_orphaned_sandbox(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "dev"
+    team_dir.mkdir(parents=True)
+    (team_dir / "workspace.txt").write_text("orphan state\n", encoding="utf-8")
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    handle = SubstrateHandle(
+        team_name="dev",
+        substrate="e2b",
+        handle="dry-run-e2b://orphan-1",
+        metadata={"dry_run": True, "workspace_path": str(team_dir)},
+    )
+    with db.session(db_path) as conn:
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="orphan-1",
+            team_name="dev",
+            handle=handle,
+            agent_card_url="http://sandbox.example/card.json",
+            status="booted",
+            metadata={"dry_run": True},
+        )
+        conn.execute("UPDATE assignment_sandboxes SET created_at = '2000-01-01 00:00:00' WHERE assignment_id = 'orphan-1'")
+
+    result = orchestrator.run_once(
+        base_args(
+            tmp_path,
+            holder="test-orchestrator",
+            stale_minutes=1,
+            user_request_alert_minutes=9999,
+            blocked_sandbox_ttl_minutes=60,
+            orphan_sandbox_ttl_minutes=1,
+            lease_ttl_seconds=30,
+            env=None,
+            json=True,
+        )
+    )
+    archive_action = next(action for action in result["actions"] if action["action"] == "orphan-sandbox-archived")
+    with db.session(db_path) as conn:
+        row = conn.execute("SELECT status, archive_path FROM assignment_sandboxes WHERE assignment_id = 'orphan-1'").fetchone()
+    assert row["status"] == "archived"
+    assert row["archive_path"] == archive_action["archive_path"]
+    assert (Path(row["archive_path"]) / "workspace.txt").read_text(encoding="utf-8") == "orphan state\n"
+
+
+def test_resolving_paused_archived_sandbox_records_restore_source(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "dev"
+    (team_dir / "inbox").mkdir(parents=True)
+    archive_path = factory / "archive" / "assignment_sandboxes" / "dev_parent_blocked"
+    archive_path.mkdir(parents=True)
+    (archive_path / "state.txt").write_text("preserved\n", encoding="utf-8")
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    handle = SubstrateHandle(
+        team_name="dev",
+        substrate="e2b",
+        handle="dry-run-e2b://parent",
+        metadata={"dry_run": True, "workspace_path": str(team_dir)},
+    )
+    with db.session(db_path) as conn:
+        db.upsert_assignment(
+            conn,
+            assignment_id="parent",
+            team_name="dev",
+            status="input-required",
+            inbox_path=str(team_dir / "inbox" / "parent.md"),
+            a2a_task_id="task-parent",
+        )
+        db.upsert_approval_request(
+            conn,
+            request_id="parent:input-required",
+            assignment_id="parent",
+            team_name="dev",
+            task_id="task-parent",
+            kind="input-required",
+            title="Need input",
+            prompt="Provide target.",
+        )
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="parent",
+            team_name="dev",
+            handle=handle,
+            agent_card_url="http://sandbox.example/card.json",
+            status="paused_archived",
+            metadata={"dry_run": True},
+        )
+        db.mark_assignment_sandbox_paused_archived(
+            conn,
+            assignment_id="parent",
+            archive_path=str(archive_path),
+            restore_source=str(archive_path),
+        )
+
+    result = resolve_user_request.run(
+        base_args(
+            tmp_path,
+            request_id="parent:input-required",
+            response_json='{"target":"prod"}',
+            status="supplied",
+            no_continuation=False,
+            continuation_assignment_id=None,
+        )
+    )
+    continuation_id = result["metadata"]["continuation_assignment_id"]
+    queued = json.loads((team_dir / "inbox" / f"{continuation_id}.queued.json").read_text(encoding="utf-8"))
+    assert queued["resume_strategy"] == "continuation_assignment_restore_sandbox"
+    assert queued["sandbox_restore_source"] == str(archive_path)
+    with db.session(db_path) as conn:
+        resume = conn.execute("SELECT strategy, metadata FROM assignment_resumes WHERE request_id = ?", ("parent:input-required",)).fetchone()
+    assert resume["strategy"] == "continuation_assignment_restore_sandbox"
+    assert json.loads(resume["metadata"])["sandbox_restore_source"] == str(archive_path)
+
+
+def test_run_assignment_sandbox_restores_workspace_from_archive(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "dev"
+    (team_dir / "inbox").mkdir(parents=True)
+    (team_dir / "transport.json").write_text(
+        json.dumps(
+            {
+                "protocol": "a2a",
+                "substrate": "e2b",
+                "push_url": "https://boss.example/a2a/push",
+                "push_token_ref": "env://PUSH_TOKEN",
+                "bridge_secret_ref": "env://BRIDGE_SECRET",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (team_dir / "status.json").write_text(json.dumps({"template": "single-agent-team"}), encoding="utf-8")
+    archive_path = factory / "archive" / "assignment_sandboxes" / "dev_parent_blocked"
+    archive_path.mkdir(parents=True)
+    (archive_path / "restored.txt").write_text("from archive\n", encoding="utf-8")
+    assignment_id = "parent-resume"
+    (team_dir / "inbox" / f"{assignment_id}.queued.json").write_text(
+        json.dumps(
+            {
+                "assignment_id": assignment_id,
+                "sandbox_restore_source": str(archive_path),
+                "resume_strategy": "continuation_assignment_restore_sandbox",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env_path = tmp_path / "bridge.env"
+    env_path.write_text("PUSH_TOKEN=push\nBRIDGE_SECRET=secret\nE2B_API_KEY=dry\n", encoding="utf-8")
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+
+    result = asyncio.run(
+        run_for_assignment(
+            factory=factory,
+            db_path=db_path,
+            team="dev",
+            assignment_id=assignment_id,
+            dry_run=True,
+            env_path=env_path,
+        )
+    )
+
+    assert (team_dir / "restored.txt").read_text(encoding="utf-8") == "from archive\n"
+    with db.session(db_path) as conn:
+        sandbox = conn.execute("SELECT status, metadata FROM assignment_sandboxes WHERE assignment_id = ?", (assignment_id,)).fetchone()
+        event = conn.execute("SELECT kind, state, metadata FROM team_events WHERE assignment_id = ?", (assignment_id,)).fetchone()
+    assert result["assignment_id"] == assignment_id
+    assert sandbox["status"] == "restored"
+    assert json.loads(sandbox["metadata"])["restore_source"] == str(archive_path)
+    assert event["kind"] == "assignment-sandbox-restored"
+    assert event["state"] == "restored"
+
+
+def test_run_soak_writes_report_and_validates_runtime_flow(tmp_path: Path) -> None:
+    result = run_soak.run(
+        base_args(
+            tmp_path,
+            name="soak-test",
+            duration_hours=24,
+            duration_seconds=0,
+            interval_seconds=1,
+            report=None,
+            env=None,
+        )
+    )
+
+    assert result["status"] == "completed"
+    assert result["validations"]
+    assert result["validations"][0]["failures"] == []
+
+    report_path = Path(result["report_path"])
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "completed"
+    assert report["name"] == "soak-test"
+
+    with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
+        archived = conn.execute("SELECT status FROM assignment_sandboxes WHERE assignment_id = 'soak-blocked'").fetchone()
+        restored = conn.execute("SELECT status FROM assignment_sandboxes WHERE status = 'restored'").fetchone()
+    assert archived["status"] == "paused_archived"
+    assert restored["status"] == "restored"
 
 
 def test_operator_board_requeue_cancel_and_explain_blockers(tmp_path: Path) -> None:

@@ -53,6 +53,9 @@ def _write_continuation_assignment(
     request: dict[str, Any],
     response: Any,
     assignment_id: str,
+    resume_strategy: str,
+    sandbox_restore_source: str | None = None,
+    parent_sandbox_status: str | None = None,
 ) -> Path:
     team_dir = factory / "teams" / request["team_name"]
     if not team_dir.exists():
@@ -66,6 +69,9 @@ def _write_continuation_assignment(
             f"- parent_assignment_id: {request['assignment_id']}\n"
             f"- user_request_id: {request['request_id']}\n"
             f"- team: {request['team_name']}\n"
+            f"- resume_strategy: {resume_strategy}\n"
+            f"- parent_sandbox_status: {parent_sandbox_status or ''}\n"
+            f"- sandbox_restore_source: {sandbox_restore_source or ''}\n"
             f"- created_at: {utc_now()}\n\n"
             "## Blocked Request\n\n"
             f"{request['prompt']}\n\n"
@@ -82,10 +88,39 @@ def _write_continuation_assignment(
             "user_request_id": request["request_id"],
             "team": request["team_name"],
             "state": "queued",
+            "resume_strategy": resume_strategy,
+            "sandbox_restore_source": sandbox_restore_source,
+            "parent_sandbox_status": parent_sandbox_status,
             "created_at": utc_now(),
         },
     )
     return inbox_path
+
+
+def _sandbox_resume_metadata(conn: Any, parent_assignment_id: str) -> dict[str, Any]:
+    sandbox = db.load_assignment_sandbox(conn, parent_assignment_id)
+    if sandbox is None:
+        return {"resume_strategy": "continuation_assignment"}
+    status = sandbox["status"]
+    restore_source = sandbox["restore_source"] or sandbox["archive_path"]
+    if status == "paused_archived" and restore_source:
+        return {
+            "resume_strategy": "continuation_assignment_restore_sandbox",
+            "sandbox_restore_source": restore_source,
+            "parent_sandbox_status": status,
+            "parent_sandbox_id": sandbox["handle"],
+        }
+    if status in {"booted", "blocked"}:
+        return {
+            "resume_strategy": "continuation_assignment_live_sandbox",
+            "parent_sandbox_status": status,
+            "parent_sandbox_id": sandbox["handle"],
+        }
+    return {
+        "resume_strategy": "continuation_assignment",
+        "parent_sandbox_status": status,
+        "parent_sandbox_id": sandbox["handle"],
+    }
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -101,6 +136,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         final_status = args.status
         should_continue = not getattr(args, "no_continuation", False) and args.status in {"supplied", "resuming"}
         if should_continue:
+            sandbox_resume = _sandbox_resume_metadata(conn, request["assignment_id"])
             continuation_id = (
                 args.continuation_assignment_id
                 or (existing_resume["continuation_assignment_id"] if existing_resume else None)
@@ -112,6 +148,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 request=request,
                 response=response,
                 assignment_id=continuation_id,
+                resume_strategy=sandbox_resume["resume_strategy"],
+                sandbox_restore_source=sandbox_resume.get("sandbox_restore_source"),
+                parent_sandbox_status=sandbox_resume.get("parent_sandbox_status"),
             )
             db.upsert_assignment(
                 conn,
@@ -120,6 +159,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 status="queued",
                 inbox_path=str(inbox_path),
                 order_id=request["assignment_id"],
+                status_reason=sandbox_resume["resume_strategy"],
             )
             resume = db.upsert_assignment_resume(
                 conn,
@@ -130,8 +170,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 team_name=request["team_name"],
                 status="sent",
                 response=response,
-                strategy="continuation_assignment",
-                metadata={"continuation_path": str(inbox_path)},
+                strategy=sandbox_resume["resume_strategy"],
+                metadata={
+                    "continuation_path": str(inbox_path),
+                    **sandbox_resume,
+                },
             )
             if existing_resume is None:
                 db.record_event(
@@ -142,16 +185,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     kind="user-request-continuation",
                     state="resuming",
                     payload_path=str(inbox_path),
-                    metadata={"request_id": request["request_id"], "parent_assignment_id": request["assignment_id"]},
+                    metadata={
+                        "request_id": request["request_id"],
+                        "parent_assignment_id": request["assignment_id"],
+                        **sandbox_resume,
+                    },
                 )
             db.clear_assignment_blocker(conn, assignment_id=request["assignment_id"], status="resuming")
             metadata.update(
                 {
                     "resume": "queued continuation assignment",
-                    "resume_strategy": "continuation_assignment",
+                    "resume_strategy": sandbox_resume["resume_strategy"],
                     "continuation_assignment_id": continuation_id,
                     "continuation_path": str(inbox_path),
                     "resume_id": resume["resume_id"],
+                    **sandbox_resume,
                 }
             )
             final_status = "resuming"
