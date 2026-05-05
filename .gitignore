@@ -35,10 +35,5 @@ archive/
 # Local secrets
 .env
 .env.*
-.viewer.env
 secrets/
 credentials/
-
-# SilverBullet runtime state (created inside mounted space dir)
-.silverbullet.auth.json
-docs/.silverbullet.auth.json

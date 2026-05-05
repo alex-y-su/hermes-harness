@@ -20,44 +20,7 @@ services:
     environment:
       HARNESS_VIEWER_PORT: "8090"
       HARNESS_VIEWER_QUIET: "1"
-    expose:
-      - "8090"
-    networks:
-      hermes-viewer-net:
-        aliases:
-          - viewer
-    restart: unless-stopped
+    ports:
+      - "${HERMES_VIEWER_BIND_IP:-127.0.0.1}:8090:8090"
     volumes:
       - hermes-boss-factory:/factory
-
-  silverbullet:
-    image: zefhemel/silverbullet:v2
-    container_name: hermes-silverbullet
-    # NOTE: set SB_USER to "<username>:<password>" before running.
-    # Example (zsh/bash): export SB_USER="admin:CHANGEME"
-    # Do NOT commit a real password to source control.
-    environment:
-      SB_USER: ${SB_USER:?Set SB_USER=username:password before starting SilverBullet}
-    ports:
-      - "${HERMES_VIEWER_BIND_IP:-127.0.0.1}:8090:3000"
-    volumes:
-      - ./docs:/space:rw
-      - ./bus_template:/space/templates:rw
-      - type: volume
-        source: hermes-boss-factory
-        target: /space/teams
-        read_only: true
-        volume:
-          subpath: teams
-    depends_on:
-      - harness-viewer
-    networks:
-      - hermes-viewer-net
-    restart: unless-stopped
-
-networks:
-  hermes-viewer-net:
-    driver: bridge
-
-volumes:
-  hermes-boss-factory:
