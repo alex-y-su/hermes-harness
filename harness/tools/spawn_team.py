@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import secrets
 from pathlib import Path
 
 from harness import db
@@ -87,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--blueprint", default=None, help="Blueprint name under factory/team_blueprints or an explicit blueprint file/directory")
     parser.add_argument("--brief", default="", help="Team brief text")
     parser.add_argument("--criteria", default="", help="Acceptance criteria text")
+    parser.add_argument("--env", default=os.getenv("HARNESS_ENV_PATH") or os.getenv("HERMES_BRIDGE_ENV_FILE"))
     parser.add_argument("--timeout-seconds", type=int, default=120)
     return parser
 
@@ -127,6 +129,13 @@ async def run(args: argparse.Namespace) -> dict[str, str]:
         (team_dir / "brief.md").write_text(brief.rstrip() + "\n", encoding="utf-8")
         (team_dir / "criteria.md").write_text(criteria.rstrip() + "\n", encoding="utf-8")
 
+    team_env_prefix = args.name.upper().replace("-", "_")
+    env_arg = getattr(args, "env", None)
+    secrets_added = ensure_team_secrets(
+        env_path=Path(env_arg).expanduser() if env_arg else None,
+        keys=(f"HARNESS_TEAM_{team_env_prefix}_BEARER_TOKEN", f"HARNESS_TEAM_{team_env_prefix}_PUSH_TOKEN"),
+    )
+
     if args.substrate == "e2b":
         handle = SubstrateHandle(
             team_name=args.name,
@@ -139,6 +148,7 @@ async def run(args: argparse.Namespace) -> dict[str, str]:
                 "dry_run": bool(args.dry_run),
                 "blueprint": blueprint["name"] if blueprint else None,
                 "blueprint_path": blueprint["path"] if blueprint else None,
+                "secrets_added": secrets_added,
             },
         )
         agent_card_url = args.agent_card_url or ""
@@ -189,6 +199,7 @@ async def run(args: argparse.Namespace) -> dict[str, str]:
             "dry_run": bool(args.dry_run),
             "blueprint": blueprint["name"] if blueprint else None,
             "blueprint_path": blueprint["path"] if blueprint else None,
+            "secrets_added": secrets_added,
         },
     )
     journal_line = f"spawned via {args.substrate} substrate"
@@ -210,9 +221,37 @@ async def run(args: argparse.Namespace) -> dict[str, str]:
                 "dry_run": args.dry_run,
                 "blueprint": blueprint["name"] if blueprint else None,
                 "blueprint_path": blueprint["path"] if blueprint else None,
+                "secrets_added": secrets_added,
             },
         )
     return {"team": args.name, "path": str(team_dir), "agent_card_url": agent_card_url}
+
+
+def ensure_team_secrets(*, env_path: Path | None, keys: tuple[str, str]) -> list[str]:
+    if env_path is None:
+        return []
+    existing: dict[str, str] = {}
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            existing[key.strip()] = value.strip()
+    missing = [key for key in keys if not existing.get(key) and not os.getenv(key)]
+    if not missing:
+        return []
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    with env_path.open("a", encoding="utf-8") as handle:
+        if env_path.exists() and env_path.stat().st_size:
+            handle.write("\n")
+        for key in missing:
+            handle.write(f"{key}={secrets.token_urlsafe(32)}\n")
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass
+    return missing
 
 
 def main(argv: list[str] | None = None) -> None:
