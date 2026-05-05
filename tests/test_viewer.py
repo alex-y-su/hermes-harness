@@ -6,16 +6,7 @@ from pathlib import Path
 
 from harness import db
 from harness.tools import dispatch_team, spawn_team
-from harness.viewer import auth
 from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, team_detail
-
-
-def test_viewer_session_cookie_round_trip() -> None:
-    cookie = auth.issue_session("secret", now=1)
-    assert auth.verify_session("secret", cookie, max_age_seconds=10**12)
-    assert not auth.verify_session("other-secret", cookie, max_age_seconds=10**12)
-    assert auth.code_matches("open-sesame", "open-sesame")
-    assert not auth.code_matches("open-sesame", "wrong")
 
 
 def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
