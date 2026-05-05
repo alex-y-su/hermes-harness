@@ -26,8 +26,28 @@ def test_init_db_creates_required_tables(tmp_path: Path) -> None:
 
     with db.connect(db_path) as conn:
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(team_assignments)")}
 
-    assert {"team_assignments", "team_events", "substrate_handles", "assignment_sandboxes"}.issubset(tables)
+    assert {
+        "team_assignments",
+        "team_events",
+        "substrate_handles",
+        "assignment_sandboxes",
+        "approval_requests",
+        "orchestrator_leases",
+        "assignment_resumes",
+        "operator_alerts",
+    }.issubset(tables)
+    assert {
+        "status_reason",
+        "blocked_by",
+        "retry_count",
+        "next_retry_at",
+        "lease_owner",
+        "lease_expires_at",
+        "last_heartbeat_at",
+        "last_error",
+    }.issubset(columns)
 
 
 def test_spawn_external_team_writes_factory_contract_and_handle(tmp_path: Path) -> None:

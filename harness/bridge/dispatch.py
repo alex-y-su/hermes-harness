@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,10 @@ def dispatch_assignment(
     factory_dir: str | Path | None = None,
     db_path: str | Path | None = None,
     e2b_dry_run: bool = False,
+    retry_delay_seconds: int = 60,
+    max_retries: int = 3,
+    lease_ttl_seconds: int = 300,
+    lease_holder: str | None = None,
 ) -> dict[str, Any]:
     team_dir = Path(team_dir)
     inbox_path = Path(inbox_path)
@@ -28,8 +33,24 @@ def dispatch_assignment(
     existing = db.ensure_assignment(assignment_id=assignment_id, team_name=team_name, inbox_path=inbox_path)
     if existing and existing["a2a_task_id"]:
         return {"skipped": True, "task_id": existing["a2a_task_id"]}
+    if not db.assignment_ready_for_dispatch(assignment_id):
+        current = db.get_assignment(assignment_id)
+        return {"skipped": True, "status": current["status"] if current else "unknown"}
     if not inbox_path.exists():
         return {"skipped": True, "missing": True}
+    holder = lease_holder or f"bridge:{os.getpid()}"
+    if not db.acquire_lease(
+        resource_type="assignment",
+        resource_id=assignment_id,
+        holder=holder,
+        ttl_seconds=lease_ttl_seconds,
+    ):
+        return {"skipped": True, "leased": True}
+    db.mark_assignment_heartbeat(
+        assignment_id=assignment_id,
+        lease_owner=holder,
+        lease_ttl_seconds=lease_ttl_seconds,
+    )
 
     transport = read_json(team_dir / "transport.json")
     provisioned_assignment_sandbox = False
@@ -59,16 +80,22 @@ def dispatch_assignment(
             text=text,
         )
     except Exception as error:
-        db.update_assignment_status(assignment_id=assignment_id, status="failed")
+        retry_row = db.mark_assignment_retrying(
+            assignment_id=assignment_id,
+            error=str(error),
+            delay_seconds=retry_delay_seconds,
+            max_retries=max_retries,
+        )
         if provisioned_assignment_sandbox and factory_dir is not None and db_path is not None:
             _run_async_finalize_assignment(
                 factory=Path(factory_dir),
                 db_path=Path(db_path),
                 team=team_name,
                 assignment_id=assignment_id,
-                terminal_state="failed",
+                terminal_state=retry_row["status"] if retry_row is not None else "failed",
                 dry_run=e2b_dry_run,
             )
+        db.release_lease(resource_type="assignment", resource_id=assignment_id, holder=holder)
         failure_path = inbox_path.parent / f"{assignment_id}.failed.json"
         write_json(
             failure_path,
@@ -77,18 +104,31 @@ def dispatch_assignment(
                 "team_name": team_name,
                 "failed_at": utc_now(),
                 "error": str(error),
+                "status": retry_row["status"] if retry_row is not None else "failed",
+                "retry_count": retry_row["retry_count"] if retry_row is not None else None,
+                "next_retry_at": retry_row["next_retry_at"] if retry_row is not None else None,
             },
         )
         db.append_event(
             team_name=team_name,
             assignment_id=assignment_id,
             source="a2a-bridge",
-            kind="dispatch-failed",
-            state="failed",
+            kind="dispatch-retrying" if retry_row is not None and retry_row["status"] == "retrying" else "dispatch-failed",
+            state=retry_row["status"] if retry_row is not None else "failed",
             payload_path=failure_path,
-            metadata={"error": str(error)},
+            metadata={
+                "error": str(error),
+                "retry_count": retry_row["retry_count"] if retry_row is not None else None,
+                "next_retry_at": retry_row["next_retry_at"] if retry_row is not None else None,
+            },
         )
-        raise
+        return {
+            "dispatched": False,
+            "status": retry_row["status"] if retry_row is not None else "failed",
+            "retry_count": retry_row["retry_count"] if retry_row is not None else None,
+            "next_retry_at": retry_row["next_retry_at"] if retry_row is not None else None,
+            "error": str(error),
+        }
 
     task_id, result = _normalize_send_result(send_result)
     in_flight_path = inbox_path.parent / f"{assignment_id}.in-flight.md"

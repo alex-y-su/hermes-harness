@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from harness.tools.hermes_a2a_server import HermesA2ARuntime, build_handler
+from harness.tools.hermes_a2a_server import HermesA2ARuntime, build_handler, _peer_id_from_card_url
 
 
 def _start_server(tmp_path: Path) -> tuple[ThreadingHTTPServer, str, str]:
@@ -193,6 +193,59 @@ def test_boss_a2a_context_is_prepended_to_hermes_prompt(tmp_path: Path) -> None:
     assert "Specialist and execution roles from docs/team are hireable remote teams" in prompt
     assert "--blueprint <team> <team>" in prompt
     assert "how many ppl in your team?" in prompt
+
+
+def test_onboarding_state_machine_buffers_then_replays(tmp_path: Path, monkeypatch) -> None:
+    from harness.tools import hermes_a2a_server as srv
+
+    fake_card = {"url": "http://peer.example/a2a/", "name": "peer", "version": "0.1.0"}
+
+    def fake_urlopen(url, timeout=10):
+        class _R:
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+            def read(self_inner):
+                return json.dumps(fake_card).encode("utf-8")
+        return _R()
+
+    monkeypatch.setattr(srv.urllib.request, "urlopen", fake_urlopen)
+
+    hermes = tmp_path / "hermes"
+    prompt_dump = tmp_path / "prompt.txt"
+    hermes.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, sys\n"
+        "p = sys.argv[sys.argv.index('-z') + 1]\n"
+        f"pathlib.Path({str(prompt_dump)!r}).write_text(p, encoding='utf-8')\n"
+        "print('hermes-replied')\n",
+        encoding="utf-8",
+    )
+    hermes.chmod(hermes.stat().st_mode | stat.S_IXUSR)
+    db_path = tmp_path / "harness.sqlite3"
+    runtime = HermesA2ARuntime(
+        profile="boss", host="127.0.0.1", port=0, token="",
+        hermes_bin=str(hermes), model="m", timeout_seconds=10, db_path=db_path,
+    )
+
+    def send(text: str) -> dict:
+        return runtime.send_message(
+            {"message": {"taskId": "t1", "contextId": "ctx-onb", "parts": [{"kind": "text", "text": text}]}},
+            native=True,
+        )
+
+    r1 = send("please do the original thing")
+    assert r1["status"]["state"] == "input-required"
+    r2 = send("http://peer.example/.well-known/agent-card.json")
+    assert r2["status"]["state"] == "input-required"
+    r3 = send("skip")
+    assert r3["status"]["state"] == "completed"
+    assert prompt_dump.read_text(encoding="utf-8").endswith("please do the original thing")
+
+    bridge = runtime._db()
+    peer_id = _peer_id_from_card_url("http://peer.example/.well-known/agent-card.json")
+    assert bridge.get_user_peer(peer_id) is not None
 
 
 def test_tasks_send_legacy_shape_is_supported(tmp_path: Path) -> None:

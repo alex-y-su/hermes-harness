@@ -50,6 +50,72 @@ def artifact_text(artifact: Any) -> str:
     return json.dumps(artifact, indent=2, sort_keys=True)
 
 
+def _slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")[:100] or "request"
+
+
+def _request_id(body: dict[str, Any], assignment_id: str, kind: str, sequence: Any) -> str:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    explicit = body.get("request_id") or body.get("requestId") or metadata.get("request_id") or metadata.get("requestId")
+    if explicit:
+        return str(explicit)
+    return f"{assignment_id}:{kind}:{sequence}"
+
+
+def _message_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if value.get("text") is not None:
+            return str(value["text"])
+        if value.get("message") is not None:
+            return str(value["message"])
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def _request_fields(body: dict[str, Any], status: dict[str, Any]) -> list[Any] | dict[str, Any]:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    for source in (body, status, metadata):
+        for key in ("required_fields", "requiredFields", "fields"):
+            value = source.get(key)
+            if isinstance(value, list | dict):
+                return value
+    return []
+
+
+def _write_user_request_escalation(
+    *,
+    factory_dir: Path,
+    team_name: str,
+    assignment_id: str,
+    task_id: str,
+    request_id: str,
+    kind: str,
+    title: str,
+    prompt: str,
+    required_fields: list[Any] | dict[str, Any],
+) -> Path:
+    escalation_dir = ensure_dir(factory_dir / "escalations")
+    path = escalation_dir / f"{_slug(team_name)}_{_slug(request_id)}.md"
+    path.write_text(
+        f"# {title}\n\n"
+        f"- request_id: {request_id}\n"
+        f"- team: {team_name}\n"
+        f"- assignment_id: {assignment_id}\n"
+        f"- task_id: {task_id}\n"
+        f"- kind: {kind}\n"
+        f"- status: open\n\n"
+        f"## Prompt\n\n{prompt}\n\n"
+        f"## Required Fields\n\n```json\n{json.dumps(required_fields, indent=2, sort_keys=True)}\n```\n\n"
+        "## Resolution\n\n"
+        f"Use `python3 -m harness.tools.resolve_user_request --factory <factory> {request_id} --response-json '{{}}'`.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def process_push(
     *,
     db: BridgeDb,
@@ -139,13 +205,62 @@ def process_push(
 
     if state == "working" and assignment_id:
         append_journal(team_dir, f"working {assignment_id}: {body.get('message') or ''}".strip())
-        db.update_assignment_status(assignment_id=assignment_id, status="working")
+        db.mark_assignment_heartbeat(assignment_id=assignment_id, status="working")
     elif state in {"input-required", "auth-required"} and assignment_id:
-        escalation_dir = ensure_dir(factory_dir / "escalations")
-        kind = "secret-request" if state == "auth-required" else "input-required"
-        path = escalation_dir / f"{team_name}_{assignment_id}_{kind}.md"
-        path.write_text(f"# {kind}: {team_name}\n\n{body.get('message') or json.dumps(body, indent=2, sort_keys=True)}\n", encoding="utf-8")
-        db.update_assignment_status(assignment_id=assignment_id, status=str(state))
+        kind = "auth-required" if state == "auth-required" else "input-required"
+        request_id = _request_id(body, assignment_id, kind, sequence)
+        prompt = (
+            _message_text(body.get("prompt"))
+            or _message_text(body.get("message"))
+            or _message_text(status.get("message"))
+            or json.dumps(body, indent=2, sort_keys=True)
+        )
+        title = str(body.get("title") or ("Authentication required" if kind == "auth-required" else "User input required"))
+        required_fields = _request_fields(body, status)
+        path = _write_user_request_escalation(
+            factory_dir=factory_dir,
+            team_name=str(team_name),
+            assignment_id=assignment_id,
+            task_id=str(task_id),
+            request_id=request_id,
+            kind=kind,
+            title=title,
+            prompt=prompt,
+            required_fields=required_fields,
+        )
+        db.upsert_approval_request(
+            request_id=request_id,
+            assignment_id=assignment_id,
+            team_name=str(team_name),
+            task_id=str(task_id),
+            kind=kind,
+            status="open",
+            title=title,
+            prompt=prompt,
+            required_fields=required_fields,
+            escalation_path=path,
+            metadata={
+                "push_sequence": sequence,
+                "push_state": state,
+                "resume": "TODO: send supplied response back through A2A resume when supported",
+            },
+        )
+        db.mark_assignment_blocked(
+            assignment_id=assignment_id,
+            status=str(state),
+            blocked_by=request_id,
+            reason=title,
+        )
+        db.append_event(
+            team_name=str(team_name),
+            assignment_id=assignment_id,
+            task_id=str(task_id),
+            source="a2a-bridge",
+            kind="user-request-opened",
+            state=kind,
+            payload_path=path,
+            metadata={"request_id": request_id},
+        )
     elif state == "completed" and assignment_id:
         outbox = ensure_dir(team_dir / "outbox")
         artifacts = body.get("artifacts") or task.get("artifacts") or [
@@ -157,12 +272,14 @@ def process_push(
             path.write_text(artifact_text(artifact), encoding="utf-8")
             written.append(path)
         db.mark_terminal(assignment_id=assignment_id, status="completed", completed_path=written[0] if written else None)
+        db.release_lease(resource_type="assignment", resource_id=assignment_id)
         _finalize_assignment_sandbox_if_present(db, secrets, factory_dir, str(team_name), assignment_id, "completed")
     elif state == "failed" and assignment_id:
         escalation_dir = ensure_dir(factory_dir / "escalations")
         path = escalation_dir / f"{team_name}_{assignment_id}_failed.md"
         path.write_text(f"# failed: {team_name}\n\n{body.get('message') or json.dumps(body, indent=2, sort_keys=True)}\n", encoding="utf-8")
         db.mark_terminal(assignment_id=assignment_id, status="failed")
+        db.release_lease(resource_type="assignment", resource_id=assignment_id)
         _finalize_assignment_sandbox_if_present(db, secrets, factory_dir, str(team_name), assignment_id, "failed")
         db.append_event(
             team_name=str(team_name),
@@ -175,6 +292,7 @@ def process_push(
         )
     elif state == "canceled" and assignment_id:
         db.mark_terminal(assignment_id=assignment_id, status="canceled")
+        db.release_lease(resource_type="assignment", resource_id=assignment_id)
         _finalize_assignment_sandbox_if_present(db, secrets, factory_dir, str(team_name), assignment_id, "canceled")
 
     return {"status": 202, "body": {"ok": True}}
@@ -192,6 +310,8 @@ def _finalize_assignment_sandbox_if_present(
     if sandbox is None or sandbox["status"] == "archived":
         return
     metadata = json.loads(sandbox["metadata"] or "{}")
+    dry_run = bool(metadata.get("dry_run"))
+    api_key = None if dry_run else secrets.resolve("env://E2B_API_KEY")
     from harness.tools.finalize_assignment_sandbox import finalize_assignment
 
     asyncio.run(
@@ -201,7 +321,7 @@ def _finalize_assignment_sandbox_if_present(
             team=team_name,
             assignment_id=assignment_id,
             terminal_state=terminal_state,
-            dry_run=bool(metadata.get("dry_run")),
-            api_key=secrets.resolve("env://E2B_API_KEY"),
+            dry_run=dry_run,
+            api_key=api_key,
         )
     )

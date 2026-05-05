@@ -37,6 +37,9 @@ class BridgeDaemon:
         poll_ms: int | str = 2000,
         a2a_client: A2AClient | Any | None = None,
         e2b_dry_run: bool = False,
+        retry_delay_seconds: int = 60,
+        max_retries: int = 3,
+        assignment_lease_ttl_seconds: int = 300,
     ) -> None:
         self.factory_dir = Path(factory_dir)
         self.db = db
@@ -45,6 +48,9 @@ class BridgeDaemon:
         self.poll_seconds = int(poll_ms) / 1000
         self.a2a_client = a2a_client or A2AClient()
         self.e2b_dry_run = e2b_dry_run
+        self.retry_delay_seconds = int(retry_delay_seconds)
+        self.max_retries = int(max_retries)
+        self.assignment_lease_ttl_seconds = int(assignment_lease_ttl_seconds)
         self.seen_halts: set[str] = set()
         self.in_progress: set[Path] = set()
         self.stop_event = threading.Event()
@@ -135,6 +141,10 @@ class BridgeDaemon:
                     factory_dir=self.factory_dir,
                     db_path=self.db.db_path,
                     e2b_dry_run=self.e2b_dry_run,
+                    retry_delay_seconds=self.retry_delay_seconds,
+                    max_retries=self.max_retries,
+                    lease_ttl_seconds=self.assignment_lease_ttl_seconds,
+                    lease_holder=f"a2a-bridge:{os.getpid()}",
                 )
             finally:
                 self.in_progress.discard(path)

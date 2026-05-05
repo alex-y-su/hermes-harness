@@ -6,7 +6,21 @@ import json
 from pathlib import Path
 
 from harness import db
-from harness.tools import dispatch_team, query_remote_teams, spawn_team, sunset_team
+from harness.tools import (
+    ack_alert,
+    cancel_assignment,
+    explain_blockers,
+    orchestrator,
+    query_alerts,
+    query_remote_teams,
+    query_user_requests,
+    query_work_board,
+    requeue_assignment,
+    resolve_user_request,
+    dispatch_team,
+    spawn_team,
+    sunset_team,
+)
 
 
 def args(**kwargs):
@@ -64,7 +78,64 @@ def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
     digest = query_remote_teams.run(base_args(tmp_path, team=None, stale_minutes=5, json=True))
     assert digest["teams"][0]["team_name"] == "dev"
     assert digest["teams"][0]["active_assignments"] == 1
+    assert digest["teams"][0]["open_user_requests"] == 0
     assert digest["stale"] == []
+
+    with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
+        db.upsert_approval_request(
+            conn,
+            request_id="asn_test:input-required",
+            assignment_id="asn_test",
+            team_name="dev",
+            task_id="task-1",
+            kind="input-required",
+            title="Need target",
+            prompt="Which target should I use?",
+            required_fields=[{"name": "target"}],
+            escalation_path=str(tmp_path / "factory" / "escalations" / "request.md"),
+            metadata={"source": "test"},
+        )
+
+    digest = query_remote_teams.run(base_args(tmp_path, team=None, stale_minutes=5, json=True))
+    assert digest["teams"][0]["open_user_requests"] == 1
+    assert digest["user_requests"][0]["request_id"] == "asn_test:input-required"
+
+    open_requests = query_user_requests.run(base_args(tmp_path, status="open", team=None, assignment_id=None, json=True))
+    assert open_requests["count"] == 1
+    assert open_requests["requests"][0]["required_fields"] == [{"name": "target"}]
+
+    supplied = resolve_user_request.run(
+        base_args(
+            tmp_path,
+            request_id="asn_test:input-required",
+            response_json='{"target":"staging"}',
+            status="supplied",
+            no_continuation=False,
+            continuation_assignment_id=None,
+        )
+    )
+    assert supplied["status"] == "resuming"
+    assert supplied["response"] == {"target": "staging"}
+    continuation_id = supplied["metadata"]["continuation_assignment_id"]
+    assert (team_dir / "inbox" / f"{continuation_id}.md").exists()
+    supplied_again = resolve_user_request.run(
+        base_args(
+            tmp_path,
+            request_id="asn_test:input-required",
+            response_json='{"target":"staging"}',
+            status="supplied",
+            no_continuation=False,
+            continuation_assignment_id=None,
+        )
+    )
+    assert supplied_again["metadata"]["continuation_assignment_id"] == continuation_id
+    with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
+        resumes = conn.execute("SELECT * FROM assignment_resumes WHERE request_id = ?", ("asn_test:input-required",)).fetchall()
+    assert len(resumes) == 1
+
+    supplied_requests = query_user_requests.run(base_args(tmp_path, status="resuming", team=None, assignment_id=None, json=True))
+    assert supplied_requests["count"] == 1
+    assert supplied_requests["requests"][0]["request_id"] == "asn_test:input-required"
 
     sunset_result = asyncio.run(
         sunset_team.run(base_args(tmp_path, team="dev", dry_run=True, no_archive=False))
@@ -98,6 +169,145 @@ def test_tools_default_factory_uses_factory_dir_env(tmp_path: Path, monkeypatch)
 
     assert Path(spawn_result["path"]).is_relative_to(factory)
     assert (factory / "teams" / "chat-created" / "status.json").exists()
+
+
+def test_orchestrator_marks_stale_assignment_and_retry_due(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    with db.session(db_path) as conn:
+        db.upsert_assignment(
+            conn,
+            assignment_id="stale-1",
+            team_name="dev",
+            status="working",
+            inbox_path=str(factory / "teams" / "dev" / "inbox" / "stale-1.md"),
+            a2a_task_id="task-stale",
+        )
+        conn.execute(
+            "UPDATE team_assignments SET last_heartbeat_at = '2026-05-05 10:00:00' WHERE assignment_id = 'stale-1'"
+        )
+        db.upsert_assignment(
+            conn,
+            assignment_id="retry-1",
+            team_name="dev",
+            status="retrying",
+            inbox_path=str(factory / "teams" / "dev" / "inbox" / "retry-1.md"),
+        )
+        conn.execute(
+            """
+            UPDATE team_assignments
+            SET retry_count = 1, next_retry_at = '2000-01-01 00:00:00'
+            WHERE assignment_id = 'retry-1'
+            """
+        )
+
+    result = orchestrator.run_once(
+        base_args(tmp_path, holder="test-orchestrator", stale_minutes=1, lease_ttl_seconds=30, json=True)
+    )
+
+    assert {action["action"] for action in result["actions"]} == {"assignment-stale", "retry-due"}
+    digest = query_remote_teams.run(base_args(tmp_path, team=None, stale_minutes=5, json=True))
+    assignments = {row["assignment_id"]: row for row in digest["assignments"]}
+    assert assignments["stale-1"]["status"] == "stale"
+    assert "retry-1" not in assignments
+    alerts = query_alerts.run(base_args(tmp_path, status="open", severity=None, kind=None, json=True))
+    assert alerts["count"] == 1
+    assert alerts["alerts"][0]["kind"] == "assignment-stale"
+    acked = ack_alert.run(base_args(tmp_path, alert_id=alerts["alerts"][0]["alert_id"]))
+    assert acked["status"] == "acknowledged"
+    assert query_alerts.run(base_args(tmp_path, status="open", severity=None, kind=None, json=True))["count"] == 0
+
+
+def test_orchestrator_does_not_mark_waiting_on_user_as_stale(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    with db.session(db_path) as conn:
+        db.upsert_assignment(
+            conn,
+            assignment_id="blocked-1",
+            team_name="dev",
+            status="working",
+            inbox_path=str(factory / "teams" / "dev" / "inbox" / "blocked-1.md"),
+            a2a_task_id="task-blocked",
+        )
+        conn.execute(
+            "UPDATE team_assignments SET last_heartbeat_at = '2026-05-05 10:00:00' WHERE assignment_id = 'blocked-1'"
+        )
+        db.upsert_approval_request(
+            conn,
+            request_id="blocked-1:input-required",
+            assignment_id="blocked-1",
+            team_name="dev",
+            task_id="task-blocked",
+            kind="input-required",
+            title="Need target",
+            prompt="Which target?",
+        )
+
+    result = orchestrator.run_once(
+        base_args(tmp_path, holder="test-orchestrator", stale_minutes=1, lease_ttl_seconds=30, json=True)
+    )
+
+    assert result["actions"] == [
+        {
+            "action": "waiting-on-user",
+            "assignment_id": "blocked-1",
+            "team_name": "dev",
+            "request_id": "blocked-1:input-required",
+        }
+    ]
+    with db.session(db_path) as conn:
+        row = conn.execute("SELECT status, blocked_by FROM team_assignments WHERE assignment_id = 'blocked-1'").fetchone()
+    assert row["status"] == "input-required"
+    assert row["blocked_by"] == "blocked-1:input-required"
+
+
+def test_operator_board_requeue_cancel_and_explain_blockers(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "dev"
+    (team_dir / "inbox").mkdir(parents=True)
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    inbox_path = team_dir / "inbox" / "stale-1.md"
+    inbox_path.write_text("# stale\n", encoding="utf-8")
+    with db.session(db_path) as conn:
+        db.upsert_assignment(
+            conn,
+            assignment_id="stale-1",
+            team_name="dev",
+            status="stale",
+            inbox_path=str(inbox_path),
+        )
+        db.upsert_assignment(
+            conn,
+            assignment_id="running-1",
+            team_name="dev",
+            status="working",
+            inbox_path=str(team_dir / "inbox" / "running-1.md"),
+            a2a_task_id="task-running",
+        )
+        db.upsert_approval_request(
+            conn,
+            request_id="running-1:auth-required",
+            assignment_id="running-1",
+            team_name="dev",
+            task_id="task-running",
+            kind="auth-required",
+            title="Need login",
+            prompt="Provide login.",
+        )
+
+    board = query_work_board.run(base_args(tmp_path, team=None, json=True))
+    assert board["counts"]["stale"] == 1
+    requeued = requeue_assignment.run(base_args(tmp_path, assignment_id="stale-1", force=False))
+    assert requeued["status"] == "queued"
+    canceled = cancel_assignment.run(base_args(tmp_path, assignment_id="running-1", reason="test cancel"))
+    assert canceled["status"] == "cancel-requested"
+    blockers = explain_blockers.run(base_args(tmp_path, team=None, json=True))
+    assert blockers["counts"]["user_requests"] == 1
+    assert any(row["assignment_id"] == "running-1" for row in blockers["assignments"])
 
 
 def test_spawn_team_from_blueprint_directory(tmp_path: Path) -> None:

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import time
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 
@@ -43,6 +46,11 @@ Operational ground truth for this deployment:
 - Use `python3 -m harness.tools.spawn_team --factory /factory --substrate e2b --template multi-agent --blueprint <team> <team>` to create docs/team specialist/execution teams.
 - Use `python3 -m harness.tools.dispatch_team --factory /factory ...` to assign work to teams.
 - Use `python3 -m harness.tools.query_remote_teams --factory /factory --json` to report remote-team state.
+- Use `python3 -m harness.tools.query_user_requests --factory /factory --json` to read user-blocked approval/input/auth cards.
+- Use `python3 -m harness.tools.resolve_user_request --factory /factory <request_id> --response-json '<json>'` after the user supplies approval, access, or input; this queues continuation work unless explicitly disabled.
+- Use `python3 -m harness.tools.orchestrator --factory /factory --json` to run one watchdog pass and surface retrying/stale assignment actions.
+- Use `python3 -m harness.tools.query_alerts --factory /factory --json` and `python3 -m harness.tools.explain_blockers --factory /factory --json` before claiming 24/7 work is healthy.
+- Use `python3 -m harness.tools.requeue_assignment`, `cancel_assignment`, and `archive_stale_team` for operator intervention instead of editing SQLite manually.
 - Use `/home/dev/.local/bin/hermes --profile boss cron ...` for scheduled autonomous boss/profile work on VM 211.
 - Boss cron scripts must be written under `/opt/hermes-home/profiles/boss/scripts/`; script names passed to `hermes --profile boss cron create --script` are resolved relative to that directory.
 - The live VM deployment is host-native systemd, not Docker.
@@ -89,6 +97,18 @@ def _task_result(task_id: str, state: str, text: str = "", *, native: bool, cont
     return task
 
 
+def _peer_id_from_card_url(agent_card_url: str) -> str:
+    return hashlib.sha256(agent_card_url.encode("utf-8")).hexdigest()[:16]
+
+
+def _fetch_agent_card(url: str) -> dict[str, Any]:
+    with urllib.request.urlopen(url, timeout=10) as response:
+        card = json.loads(response.read().decode("utf-8"))
+    if not (isinstance(card, dict) and isinstance(card.get("url"), str) and card["url"]):
+        raise ValueError("agent card missing required 'url' field")
+    return card
+
+
 class HermesA2ARuntime:
     def __init__(
         self,
@@ -103,6 +123,7 @@ class HermesA2ARuntime:
         agent_name: str = "",
         description: str = "",
         public_url: str = "",
+        db_path: Path | None = None,
     ) -> None:
         self.profile = profile
         self.agent_name = agent_name or profile
@@ -115,6 +136,17 @@ class HermesA2ARuntime:
         self.timeout_seconds = timeout_seconds
         self.public_url = public_url.rstrip("/") if public_url else f"http://{self.host}:{self.port}"
         self.tasks: dict[str, dict[str, Any]] = {}
+        self.db_path = Path(db_path) if db_path else None
+        self._bridge_db: Any = None
+
+    def _db(self) -> Any:
+        if self.db_path is None:
+            return None
+        if self._bridge_db is None:
+            from harness.bridge.store import BridgeDb
+
+            self._bridge_db = BridgeDb(self.db_path)
+        return self._bridge_db
 
     def agent_card(self) -> dict[str, Any]:
         return {
@@ -124,7 +156,7 @@ class HermesA2ARuntime:
             "version": "0.1.0",
             "preferredTransport": "JSONRPC",
             "protocolVersion": "0.3.0",
-            "capabilities": {"streaming": False, "pushNotifications": False},
+            "capabilities": {"streaming": False, "pushNotifications": True},
             "defaultInputModes": ["text"],
             "defaultOutputModes": ["text/markdown"],
             "skills": [
@@ -137,6 +169,19 @@ class HermesA2ARuntime:
             ],
         }
 
+    def _input_required(
+        self,
+        task_id: str,
+        context_id: str,
+        message: str,
+        *,
+        native: bool,
+        wrapped: bool,
+    ) -> dict[str, Any]:
+        task = _task_result(task_id, "input-required", message, native=native, context_id=context_id)
+        self.tasks[task_id] = task
+        return {"task": task} if wrapped else task
+
     def send_message(self, params: dict[str, Any], *, native: bool, wrapped: bool = False) -> dict[str, Any]:
         message = params.get("message") if isinstance(params.get("message"), dict) else {}
         text = _message_text(message)
@@ -144,6 +189,85 @@ class HermesA2ARuntime:
         context_id = _context_id(task_id, message)
         self.tasks[task_id] = _task_result(task_id, "working", native=native, context_id=context_id)
         self.tasks[task_id]["createdAt"] = time.time()
+
+        bridge = self._db()
+        if bridge is not None:
+            onboarding = bridge.get_onboarding(context_id)
+            user_ctx = None if onboarding else bridge.get_user_context(context_id)
+
+            if onboarding is None and user_ctx is None:
+                bridge.set_onboarding(
+                    context_id=context_id,
+                    step="awaiting_card",
+                    pending_request=text,
+                )
+                return self._input_required(
+                    task_id,
+                    context_id,
+                    "Hi. Before I help, share your A2A agent card URL "
+                    "(e.g. https://you.example/.well-known/agent-card.json) "
+                    "so I can reach you back later.",
+                    native=native,
+                    wrapped=wrapped,
+                )
+
+            if onboarding and onboarding["step"] == "awaiting_card":
+                url = text.strip()
+                try:
+                    card = _fetch_agent_card(url)
+                except Exception as exc:
+                    return self._input_required(
+                        task_id,
+                        context_id,
+                        f"Couldn't fetch or parse that as an AgentCard ({exc}). "
+                        "Please send a valid agent card URL.",
+                        native=native,
+                        wrapped=wrapped,
+                    )
+                bridge.set_onboarding(
+                    context_id=context_id,
+                    step="awaiting_token",
+                    pending_request=onboarding["pending_request"],
+                    partial_card_url=url,
+                    partial_card_json=json.dumps(card),
+                )
+                return self._input_required(
+                    task_id,
+                    context_id,
+                    "Got it. Send a bearer token I should use when calling you, "
+                    "or reply 'skip' to leave it empty.",
+                    native=native,
+                    wrapped=wrapped,
+                )
+
+            if onboarding and onboarding["step"] == "awaiting_token":
+                token_text = text.strip()
+                access_token = None if token_text.lower() == "skip" else token_text
+                peer_id = _peer_id_from_card_url(onboarding["partial_card_url"])
+                bridge.upsert_user_peer(
+                    peer_id=peer_id,
+                    agent_card_url=onboarding["partial_card_url"],
+                    agent_card_json=onboarding["partial_card_json"],
+                    access_token=access_token,
+                )
+                bridge.upsert_user_context(
+                    context_id=context_id,
+                    peer_id=peer_id,
+                    task_id=task_id,
+                    status="active",
+                )
+                pending = onboarding["pending_request"] or ""
+                bridge.delete_onboarding(context_id)
+                text = pending
+
+            elif user_ctx and not onboarding:
+                bridge.upsert_user_context(
+                    context_id=context_id,
+                    peer_id=user_ctx["peer_id"],
+                    task_id=task_id,
+                    status="active",
+                )
+
         try:
             answer = self._run_hermes(text)
             task = _task_result(task_id, "completed", answer, native=native, context_id=context_id)
@@ -272,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-name", default=os.getenv("HERMES_A2A_AGENT_NAME", ""))
     parser.add_argument("--description", default=os.getenv("HERMES_A2A_AGENT_DESCRIPTION", ""))
     parser.add_argument("--public-url", default=os.getenv("HERMES_A2A_PUBLIC_URL", ""))
+    parser.add_argument("--db-path", default=os.getenv("HARNESS_BRIDGE_DB", ""))
     args = parser.parse_args(argv)
 
     runtime = HermesA2ARuntime(
@@ -285,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_name=args.agent_name,
         description=args.description,
         public_url=args.public_url,
+        db_path=Path(args.db_path) if args.db_path else None,
     )
     server = ThreadingHTTPServer((args.host, args.port), build_handler(runtime))
     server.serve_forever()

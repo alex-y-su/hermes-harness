@@ -18,6 +18,9 @@ HERMES_A2A_PUBLIC_HOST="${HERMES_A2A_PUBLIC_HOST:-127.0.0.1}"
 HARNESS_A2A_BRIDGE_PORT="${HARNESS_A2A_BRIDGE_PORT:-8787}"
 HARNESS_VIEWER_HOST="${HARNESS_VIEWER_HOST:-0.0.0.0}"
 HARNESS_VIEWER_PORT="${HARNESS_VIEWER_PORT:-8090}"
+HARNESS_ORCHESTRATOR_POLL_SECONDS="${HARNESS_ORCHESTRATOR_POLL_SECONDS:-30}"
+HARNESS_ORCHESTRATOR_STALE_MINUTES="${HARNESS_ORCHESTRATOR_STALE_MINUTES:-15}"
+HARNESS_ORCHESTRATOR_LEASE_TTL_SECONDS="${HARNESS_ORCHESTRATOR_LEASE_TTL_SECONDS:-60}"
 HARNESS_ENV_PATH="${HARNESS_ENV_PATH:-$ROOT_DIR/.bridge.env}"
 HARNESS_VIEWER_ENV_FILE="${HARNESS_VIEWER_ENV_FILE:-$ROOT_DIR/.viewer.env}"
 SYSTEMD_ENV_DIR="${HERMES_NATIVE_SYSTEMD_ENV_DIR:-/etc/hermes-harness}"
@@ -62,6 +65,11 @@ fi
 if command -v sqlite3 >/dev/null 2>&1; then
   sqlite3 "$HARNESS_SQLITE_PATH" < "$ROOT_DIR/schema/sqlite.sql"
 fi
+"$HARNESS_VENV/bin/python" - <<PY
+from pathlib import Path
+from harness.db import init_db
+init_db(Path("$HARNESS_SQLITE_PATH"))
+PY
 
 sudo mkdir -p "$SYSTEMD_ENV_DIR"
 sudo tee "$SYSTEMD_ENV_FILE" >/dev/null <<EOF
@@ -84,6 +92,9 @@ HARNESS_A2A_BRIDGE_PORT=$HARNESS_A2A_BRIDGE_PORT
 HARNESS_VIEWER_HOST=$HARNESS_VIEWER_HOST
 HARNESS_VIEWER_PORT=$HARNESS_VIEWER_PORT
 HARNESS_VIEWER_QUIET=1
+HARNESS_ORCHESTRATOR_POLL_SECONDS=$HARNESS_ORCHESTRATOR_POLL_SECONDS
+HARNESS_ORCHESTRATOR_STALE_MINUTES=$HARNESS_ORCHESTRATOR_STALE_MINUTES
+HARNESS_ORCHESTRATOR_LEASE_TTL_SECONDS=$HARNESS_ORCHESTRATOR_LEASE_TTL_SECONDS
 PYTHONPATH=$ROOT_DIR
 PATH=$HARNESS_VENV/bin:$SERVICE_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
@@ -168,14 +179,34 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+sudo tee /etc/systemd/system/hermes-orchestrator.service >/dev/null <<EOF
+[Unit]
+Description=Hermes Harness assignment watchdog and orchestrator
+After=network-online.target hermes-bridge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$ROOT_DIR
+EnvironmentFile=$SYSTEMD_ENV_FILE
+ExecStart=$HARNESS_VENV/bin/python -m harness.tools.orchestrator --factory $FACTORY_DIR --db $HARNESS_SQLITE_PATH --loop
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
-sudo systemctl enable hermes-boss-a2a hermes-boss-gateway hermes-bridge hermes-viewer
+sudo systemctl enable hermes-boss-a2a hermes-boss-gateway hermes-bridge hermes-viewer hermes-orchestrator
 
 if [ "${HERMES_NATIVE_START_SERVICES:-1}" = "1" ]; then
-  sudo systemctl restart hermes-boss-a2a hermes-boss-gateway hermes-bridge hermes-viewer
+  sudo systemctl restart hermes-boss-a2a hermes-boss-gateway hermes-bridge hermes-viewer hermes-orchestrator
 fi
 
 echo "Installed native Hermes Harness systemd services."
 echo "A2A:    $HERMES_A2A_PUBLIC_URL"
 echo "Viewer: http://$HARNESS_VIEWER_HOST:$HARNESS_VIEWER_PORT/"
 echo "Bridge: http://127.0.0.1:$HARNESS_A2A_BRIDGE_PORT/"
+echo "Orchestrator: hermes-orchestrator.service"

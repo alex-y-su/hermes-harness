@@ -62,6 +62,27 @@ def _rel(factory: Path, path: str | None) -> str | None:
         return path
 
 
+def _decode_user_request(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["required_fields"] = json.loads(data.pop("required_fields_json") or "[]")
+    data["response"] = json.loads(data.pop("response_json") or "null")
+    data["metadata"] = json.loads(data.get("metadata") or "{}")
+    return data
+
+
+def _decode_resume(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["response"] = json.loads(data.pop("response_json") or "null")
+    data["metadata"] = json.loads(data.get("metadata") or "{}")
+    return data
+
+
+def _decode_alert(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["metadata"] = json.loads(data.get("metadata") or "{}")
+    return data
+
+
 def _team_dirs(factory: Path) -> list[Path]:
     teams_dir = factory / "teams"
     if not teams_dir.exists():
@@ -81,8 +102,23 @@ def list_teams(factory: Path, db_path: Path) -> list[dict[str, Any]]:
                 SELECT
                   team_name,
                   COUNT(*) AS total_assignments,
-                  COUNT(CASE WHEN status NOT IN ('completed','failed','canceled','archived') THEN 1 END) AS active_assignments
+                  COUNT(CASE WHEN status NOT IN ('completed','failed','canceled','archived') THEN 1 END) AS active_assignments,
+                  COUNT(CASE WHEN status = 'retrying' THEN 1 END) AS retrying_assignments,
+                  COUNT(CASE WHEN status = 'stale' THEN 1 END) AS stale_assignments
                 FROM team_assignments
+                GROUP BY team_name
+                """
+            )
+        }
+        request_counts = {
+            row["team_name"]: dict(row)
+            for row in conn.execute(
+                """
+                SELECT
+                  team_name,
+                  COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_user_requests,
+                  COUNT(*) AS total_user_requests
+                FROM approval_requests
                 GROUP BY team_name
                 """
             )
@@ -99,6 +135,7 @@ def list_teams(factory: Path, db_path: Path) -> list[dict[str, Any]]:
         team_dir = factory / "teams" / name
         status = _read_json(team_dir / "status.json")
         counts = assignment_counts.get(name, {})
+        user_request_counts = request_counts.get(name, {})
         handle = handles.get(name, {})
         teams.append(
             {
@@ -111,7 +148,11 @@ def list_teams(factory: Path, db_path: Path) -> list[dict[str, Any]]:
                 "updated_at": status.get("updated_at"),
                 "last_event_at": last_events.get(name),
                 "active_assignments": counts.get("active_assignments", 0),
+                "retrying_assignments": counts.get("retrying_assignments", 0),
+                "stale_assignments": counts.get("stale_assignments", 0),
                 "total_assignments": counts.get("total_assignments", 0),
+                "open_user_requests": user_request_counts.get("open_user_requests", 0),
+                "total_user_requests": user_request_counts.get("total_user_requests", 0),
                 "path": str(team_dir),
                 "exists": team_dir.exists(),
             }
@@ -137,15 +178,47 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
             dict(row)
             for row in conn.execute(
                 """
-                SELECT assignment_id, team_name, order_id, status, created_at, dispatched_at, terminal_at
+                SELECT
+                  assignment_id, team_name, order_id, status, status_reason,
+                  blocked_by, retry_count, max_retries, next_retry_at,
+                  last_heartbeat_at, last_error, lease_owner, lease_expires_at,
+                  created_at, dispatched_at, terminal_at
                 FROM team_assignments
                 ORDER BY created_at DESC
                 LIMIT 100
                 """
             )
         ]
+        user_requests = [
+            _decode_user_request(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM approval_requests
+                WHERE status IN ('open', 'supplied', 'resuming')
+                ORDER BY created_at DESC, request_id DESC
+                LIMIT 100
+                """
+            )
+        ]
+        alerts = [
+            _decode_alert(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM operator_alerts
+                WHERE status = 'open'
+                ORDER BY created_at DESC, alert_id DESC
+                LIMIT 100
+                """
+            )
+        ]
     hubs = sorted({team["hub"] for team in teams if team.get("hub")})
     active = sum(int(team.get("active_assignments") or 0) for team in teams)
+    waiting = sum(1 for request in user_requests if request["status"] == "open")
+    retrying = sum(int(team.get("retrying_assignments") or 0) for team in teams)
+    stale = sum(int(team.get("stale_assignments") or 0) for team in teams)
+    alert_count = len(alerts)
     return {
         "factory": str(factory),
         "teams": teams,
@@ -154,9 +227,15 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
             "teams": len(teams),
             "hubs": len(hubs),
             "active_assignments": active,
+            "waiting_on_user": waiting,
+            "retrying_assignments": retrying,
+            "stale_assignments": stale,
+            "open_alerts": alert_count,
         },
         "recent_events": recent_events,
         "assignments": assignments,
+        "user_requests": user_requests,
+        "alerts": alerts,
     }
 
 
@@ -225,6 +304,32 @@ def team_detail(factory: Path, db_path: Path, team_name: str) -> dict[str, Any] 
                 (team_name,),
             )
         ]
+        user_requests = [
+            _decode_user_request(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM approval_requests
+                WHERE team_name = ?
+                ORDER BY created_at DESC, request_id DESC
+                LIMIT 100
+                """,
+                (team_name,),
+            )
+        ]
+        alerts = [
+            _decode_alert(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM operator_alerts
+                WHERE team_name = ? AND status = 'open'
+                ORDER BY created_at DESC, alert_id DESC
+                LIMIT 100
+                """,
+                (team_name,),
+            )
+        ]
     outbox_dir = team_dir / "outbox"
     outbox = []
     if outbox_dir.exists():
@@ -241,6 +346,8 @@ def team_detail(factory: Path, db_path: Path, team_name: str) -> dict[str, Any] 
         "journal": _read_text(team_dir / "journal.md"),
         "assignments": assignments,
         "events": events,
+        "user_requests": user_requests,
+        "alerts": alerts,
         "outbox": outbox,
     }
 
@@ -263,12 +370,53 @@ def assignment_detail(factory: Path, db_path: Path, assignment_id: str) -> dict[
                 (assignment_id,),
             )
         ]
+        user_requests = [
+            _decode_user_request(request)
+            for request in conn.execute(
+                """
+                SELECT *
+                FROM approval_requests
+                WHERE assignment_id = ?
+                ORDER BY created_at DESC, request_id DESC
+                """,
+                (assignment_id,),
+            )
+        ]
+        resumes = [
+            _decode_resume(resume)
+            for resume in conn.execute(
+                """
+                SELECT *
+                FROM assignment_resumes
+                WHERE parent_assignment_id = ? OR continuation_assignment_id = ?
+                ORDER BY created_at DESC, resume_id DESC
+                """,
+                (assignment_id, assignment_id),
+            )
+        ]
+        sandbox = conn.execute("SELECT * FROM assignment_sandboxes WHERE assignment_id = ?", (assignment_id,)).fetchone()
+        alerts = [
+            _decode_alert(alert)
+            for alert in conn.execute(
+                """
+                SELECT *
+                FROM operator_alerts
+                WHERE assignment_id = ? AND status = 'open'
+                ORDER BY created_at DESC, alert_id DESC
+                """,
+                (assignment_id,),
+            )
+        ]
     payload_path = assignment.get("completed_path") or assignment.get("inbox_path")
     return {
         **assignment,
         "relative_payload_path": _rel(factory, payload_path),
         "body": _read_text(Path(payload_path)) if payload_path else "",
         "events": events,
+        "user_requests": user_requests,
+        "resumes": resumes,
+        "sandbox": dict(sandbox) if sandbox else None,
+        "alerts": alerts,
     }
 
 

@@ -17,6 +17,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=int(os.environ.get("HARNESS_A2A_BRIDGE_PORT", "8787")))
     parser.add_argument("--poll-ms", type=int, default=int(os.environ.get("HARNESS_A2A_BRIDGE_POLL_MS", "2000")))
     parser.add_argument("--e2b-dry-run", action="store_true", default=os.environ.get("HARNESS_E2B_DRY_RUN") == "1")
+    parser.add_argument("--retry-delay-seconds", type=int, default=int(os.environ.get("HARNESS_ASSIGNMENT_RETRY_DELAY_SECONDS", "60")))
+    parser.add_argument("--max-retries", type=int, default=int(os.environ.get("HARNESS_ASSIGNMENT_MAX_RETRIES", "3")))
+    parser.add_argument("--assignment-lease-ttl-seconds", type=int, default=int(os.environ.get("HARNESS_ASSIGNMENT_LEASE_TTL_SECONDS", "300")))
     return parser
 
 
@@ -32,6 +35,9 @@ def main(argv: list[str] | None = None) -> None:
         port=args.port,
         poll_ms=args.poll_ms,
         e2b_dry_run=args.e2b_dry_run,
+        retry_delay_seconds=args.retry_delay_seconds,
+        max_retries=args.max_retries,
+        assignment_lease_ttl_seconds=args.assignment_lease_ttl_seconds,
     )
     install_signal_handlers(daemon, db)
     try:

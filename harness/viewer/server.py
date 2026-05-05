@@ -48,8 +48,9 @@ APP_HTML = r"""<!doctype html>
     .muted { color: var(--muted); }
     .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; }
     .state-failed, .state-error { color: var(--bad); }
-    .state-working, .state-dispatched, .state-queued, .state-spawned { color: var(--accent); }
-    .state-input-required { color: var(--warn); }
+    .state-working, .state-dispatched, .state-queued, .state-spawned, .state-retrying { color: var(--accent); }
+    .state-input-required, .state-auth-required, .state-open, .state-supplied, .state-resuming { color: var(--warn); }
+    .state-stale { color: var(--bad); }
     table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; overflow: hidden; }
     th, td { border-bottom: 1px solid var(--line); padding: 9px 10px; text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
@@ -67,7 +68,20 @@ APP_HTML = r"""<!doctype html>
     .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 22px 0 10px; }
     .section-head h2 { margin: 0; }
     .dashboard-graph svg { min-height: 420px; }
-    @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } }
+    .tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin: 14px 0 18px; }
+    .tabs a { display: inline-flex; align-items: center; min-height: 34px; padding: 7px 10px; color: var(--muted); border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; }
+    .tabs a.active { color: var(--accent); border-color: var(--line); background: var(--panel); }
+    .kanban { display: grid; grid-template-columns: repeat(7, minmax(240px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+    .kanban-column { min-width: 240px; border: 1px solid var(--line); background: #15191d; border-radius: 8px; padding: 10px; }
+    .kanban-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .kanban-head h2 { margin: 0; font-size: 14px; }
+    .kanban-count { color: var(--muted); font-size: 12px; }
+    .kanban-stack { display: grid; gap: 8px; }
+    .kanban-card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 10px; min-width: 0; }
+    .kanban-title { display: block; font-weight: 650; overflow-wrap: anywhere; }
+    .kanban-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .kanban-empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 10px; min-height: 56px; }
+    @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } .kanban { grid-template-columns: repeat(7, 260px); } }
   </style>
 </head>
 <body>
@@ -102,6 +116,7 @@ APP_HTML = r"""<!doctype html>
       const teams = (state.dashboard?.teams || []).filter(t => t.team_name.toLowerCase().includes(q));
       nav.innerHTML = `
         <a href="#/" data-route="/">Dashboard</a>
+        <a href="#/kanban" data-route="/kanban">Kanban</a>
         <a href="#/config" data-route="/config">Hub Config</a>
         <a href="#/graph" data-route="/graph">Graph</a>
         ${(state.dashboard?.hubs || []).map(h => `<a href="${linkFor("hub", h)}">Hub: ${esc(h)}</a>`).join("")}
@@ -110,15 +125,29 @@ APP_HTML = r"""<!doctype html>
       `;
     }
     function statusClass(value) { return `state-${String(value || "unknown").toLowerCase()}`; }
+    function renderTabs(active) {
+      const tabs = [
+        {id: "dashboard", label: "Dashboard", href: "#/"},
+        {id: "kanban", label: "Kanban", href: "#/kanban"},
+        {id: "graph", label: "Graph", href: "#/graph"},
+        {id: "config", label: "Hub Config", href: "#/config"}
+      ];
+      return `<nav class="tabs" aria-label="Hub views">${tabs.map(tab => `<a class="${active === tab.id ? "active" : ""}" href="${tab.href}">${esc(tab.label)}</a>`).join("")}</nav>`;
+    }
     function renderDashboard() {
       const d = state.dashboard;
       app.innerHTML = `
         <h1>Dashboard</h1>
+        ${renderTabs("dashboard")}
         <p class="muted">${esc(d.factory)}</p>
         <section class="grid">
           <div class="card"><div class="metric">${d.counts.teams}</div><div class="muted">Teams</div></div>
           <div class="card"><div class="metric">${d.counts.hubs}</div><div class="muted">Hubs</div></div>
           <div class="card"><div class="metric">${d.counts.active_assignments}</div><div class="muted">Active assignments</div></div>
+          <div class="card"><div class="metric">${d.counts.waiting_on_user}</div><div class="muted">Waiting on user</div></div>
+          <div class="card"><div class="metric">${d.counts.retrying_assignments}</div><div class="muted">Retrying</div></div>
+          <div class="card"><div class="metric">${d.counts.stale_assignments}</div><div class="muted">Stale</div></div>
+          <div class="card"><div class="metric">${d.counts.open_alerts}</div><div class="muted">Open alerts</div></div>
         </section>
         <div class="section-head">
           <h2>Org Graph</h2>
@@ -127,6 +156,10 @@ APP_HTML = r"""<!doctype html>
         <section class="dashboard-graph">
           ${renderOrgGraphSvg({maxAssignmentsPerTeam: 2, minHeight: 420})}
         </section>
+        <h2>Waiting on User</h2>
+        ${userRequestTable(d.user_requests || [])}
+        <h2>Alerts</h2>
+        ${alertTable(d.alerts || [])}
         <h2>Teams</h2>
         ${teamTable(d.teams)}
         <h2>Recent Events</h2>
@@ -134,14 +167,32 @@ APP_HTML = r"""<!doctype html>
       `;
     }
     function teamTable(teams) {
-      return `<table><thead><tr><th>Team</th><th>Hub</th><th>State</th><th>Substrate</th><th>Active</th><th>Last Event</th></tr></thead><tbody>
+      return `<table><thead><tr><th>Team</th><th>Hub</th><th>State</th><th>Substrate</th><th>Active</th><th>Retry</th><th>Stale</th><th>User</th><th>Last Event</th></tr></thead><tbody>
         ${teams.map(t => `<tr>
           <td><a href="${linkFor("team", t.team_name)}">${esc(t.team_name)}</a></td>
           <td>${t.hub ? `<a href="${linkFor("hub", t.hub)}">${esc(t.hub)}</a>` : ""}</td>
           <td class="${statusClass(t.state)}">${esc(t.state)}</td>
           <td>${esc(t.substrate)}</td>
           <td>${esc(t.active_assignments)}</td>
+          <td class="${Number(t.retrying_assignments || 0) ? "state-working" : "muted"}">${esc(t.retrying_assignments || 0)} retry</td>
+          <td class="${Number(t.stale_assignments || 0) ? "state-failed" : "muted"}">${esc(t.stale_assignments || 0)} stale</td>
+          <td class="${Number(t.open_user_requests || 0) ? "state-open" : "muted"}">${esc(t.open_user_requests || 0)}</td>
           <td class="muted">${esc(t.last_event_at || "never")}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+    }
+    function userRequestTable(requests) {
+      const visible = requests.filter(r => ["open", "supplied", "resuming"].includes(String(r.status)));
+      if (!visible.length) return '<p class="muted">No user-blocked requests.</p>';
+      return `<table><thead><tr><th>Request</th><th>Status</th><th>Kind</th><th>Team</th><th>Assignment</th><th>Title</th><th>Created</th></tr></thead><tbody>
+        ${visible.map(r => `<tr>
+          <td>${esc(r.request_id)}</td>
+          <td class="${statusClass(r.status)}">${esc(r.status)}</td>
+          <td>${esc(r.kind)}</td>
+          <td><a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></td>
+          <td><a href="${linkFor("assignment", r.assignment_id)}">${esc(r.assignment_id)}</a></td>
+          <td>${esc(r.title)}</td>
+          <td class="muted">${esc(r.created_at)}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
@@ -156,6 +207,81 @@ APP_HTML = r"""<!doctype html>
         </tr>`).join("")}
       </tbody></table>`;
     }
+    function alertTable(alerts) {
+      const visible = alerts.filter(a => String(a.status || "open") === "open");
+      if (!visible.length) return '<p class="muted">No open alerts.</p>';
+      return `<table><thead><tr><th>Alert</th><th>Severity</th><th>Kind</th><th>Team</th><th>Assignment</th><th>Title</th><th>Created</th></tr></thead><tbody>
+        ${visible.map(a => `<tr>
+          <td>${esc(a.alert_id)}</td>
+          <td class="${a.severity === "critical" ? "state-failed" : "state-open"}">${esc(a.severity)}</td>
+          <td>${esc(a.kind)}</td>
+          <td>${a.team_name ? `<a href="${linkFor("team", a.team_name)}">${esc(a.team_name)}</a>` : ""}</td>
+          <td>${a.assignment_id ? `<a href="${linkFor("assignment", a.assignment_id)}">${esc(a.assignment_id)}</a>` : ""}</td>
+          <td>${esc(a.title)}</td>
+          <td class="muted">${esc(a.created_at)}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+    }
+    function kanbanAssignmentCard(a) {
+      return `<article class="kanban-card">
+        <a class="kanban-title" href="${linkFor("assignment", a.assignment_id)}">${esc(a.assignment_id)}</a>
+        <div class="kanban-meta">
+          <span class="pill ${statusClass(a.status)}">${esc(a.status)}</span>
+          <span class="pill"><a href="${linkFor("team", a.team_name)}">${esc(a.team_name)}</a></span>
+        </div>
+        <div class="muted">${esc(a.order_id || "no order")} · ${esc(a.created_at || "")}</div>
+        ${a.status_reason ? `<div class="muted">${esc(a.status_reason)}</div>` : ""}
+        ${a.next_retry_at ? `<div class="muted">retry ${esc(a.next_retry_at)}</div>` : ""}
+      </article>`;
+    }
+    function kanbanRequestCard(r) {
+      return `<article class="kanban-card">
+        <span class="kanban-title">${esc(r.title || r.request_id)}</span>
+        <div class="kanban-meta">
+          <span class="pill ${statusClass(r.status)}">${esc(r.status)}</span>
+          <span class="pill">${esc(r.kind)}</span>
+          <span class="pill"><a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></span>
+        </div>
+        <div class="muted"><a href="${linkFor("assignment", r.assignment_id)}">${esc(r.assignment_id)}</a> · ${esc(r.created_at || "")}</div>
+      </article>`;
+    }
+    function kanbanColumn(title, cards, renderer) {
+      return `<section class="kanban-column">
+        <div class="kanban-head"><h2>${esc(title)}</h2><span class="kanban-count">${cards.length}</span></div>
+        <div class="kanban-stack">${cards.length ? cards.map(renderer).join("") : '<div class="kanban-empty">Empty</div>'}</div>
+      </section>`;
+    }
+    function renderKanban() {
+      const d = state.dashboard;
+      const assignments = d.assignments || [];
+      const requests = d.user_requests || [];
+      const queued = assignments.filter(a => ["queued", "pending"].includes(String(a.status)));
+      const running = assignments.filter(a => ["dispatched", "working", "spawned", "booted"].includes(String(a.status)));
+      const waiting = requests.filter(r => String(r.status) === "open");
+      const resumingRequests = requests.filter(r => ["supplied", "resuming"].includes(String(r.status)));
+      const resumingAssignments = assignments.filter(a => String(a.status) === "resuming");
+      const retrying = assignments.filter(a => String(a.status) === "retrying");
+      const stale = assignments.filter(a => String(a.status) === "stale");
+      const done = assignments.filter(a => String(a.status) === "completed");
+      const stopped = assignments.filter(a => ["failed", "canceled", "cancel-requested", "archived"].includes(String(a.status)));
+      app.innerHTML = `
+        <div class="section-head">
+          <h1>Kanban</h1>
+          <span class="pill">read-only</span>
+        </div>
+        ${renderTabs("kanban")}
+        <p class="muted">${esc(d.factory)}</p>
+        <section class="kanban">
+          ${kanbanColumn("Queued", queued, kanbanAssignmentCard)}
+          ${kanbanColumn("Running", running, kanbanAssignmentCard)}
+          ${kanbanColumn("Waiting on User", waiting, kanbanRequestCard)}
+          ${kanbanColumn("Resuming", [...resumingRequests, ...resumingAssignments], card => card.request_id ? kanbanRequestCard(card) : kanbanAssignmentCard(card))}
+          ${kanbanColumn("Retrying", retrying, kanbanAssignmentCard)}
+          ${kanbanColumn("Stale", stale, kanbanAssignmentCard)}
+          ${kanbanColumn("Completed", done, kanbanAssignmentCard)}
+          ${kanbanColumn("Stopped", stopped, kanbanAssignmentCard)}
+        </section>`;
+    }
     async function renderTeam(name) {
       const t = await api(`/api/teams/${encodeURIComponent(name)}`);
       app.innerHTML = `
@@ -164,6 +290,8 @@ APP_HTML = r"""<!doctype html>
             <h1>${esc(t.team_name)}</h1>
             <p><span class="pill ${statusClass(t.state)}">${esc(t.state)}</span> <span class="pill">${esc(t.substrate || "unknown substrate")}</span> ${t.hub ? `<span class="pill">hub: <a href="${linkFor("hub", t.hub)}">${esc(t.hub)}</a></span>` : ""}</p>
             <h2>Journal</h2><pre>${esc(t.journal || "No journal yet.")}</pre>
+            <h2>Waiting on User</h2>${userRequestTable(t.user_requests || [])}
+            <h2>Alerts</h2>${alertTable(t.alerts || [])}
             <h2>Assignments</h2>${assignmentTable(t.assignments)}
             <h2>Recent Events</h2>${eventTable(t.events)}
           </section>
@@ -180,6 +308,7 @@ APP_HTML = r"""<!doctype html>
       const files = config.live.length ? config.live : config.fallback;
       app.innerHTML = `
         <h1>Hub Config</h1>
+        ${renderTabs("config")}
         <p class="muted">${config.using_fallback ? "Showing repository templates because no live factory config files exist yet." : "Showing live factory config files."}</p>
         ${files.map(file => `<section>
           <h2>${esc(file.name)} <span class="pill">${esc(file.source)}</span></h2>
@@ -198,6 +327,10 @@ APP_HTML = r"""<!doctype html>
         <p><span class="pill ${statusClass(a.status)}">${esc(a.status)}</span> <span class="pill">team: <a href="${linkFor("team", a.team_name)}">${esc(a.team_name)}</a></span></p>
         <p class="muted">${esc(a.relative_payload_path || "")}</p>
         <h2>Body</h2><pre>${esc(a.body || "No body available.")}</pre>
+        <h2>Waiting on User</h2>${userRequestTable(a.user_requests || [])}
+        <h2>Alerts</h2>${alertTable(a.alerts || [])}
+        <h2>Resume Chain</h2><pre>${esc(JSON.stringify(a.resumes || [], null, 2))}</pre>
+        <h2>Sandbox</h2><pre>${esc(JSON.stringify(a.sandbox || {}, null, 2))}</pre>
         <h2>Events</h2>${eventTable(a.events)}`;
     }
     function renderHub(name) {
@@ -259,7 +392,7 @@ APP_HTML = r"""<!doctype html>
       </svg>`;
     }
     async function renderGraph() {
-      app.innerHTML = `<h1>Org Graph</h1><p class="muted">Boss team, connected remote teams, and their recent assignments.</p>
+      app.innerHTML = `<h1>Org Graph</h1>${renderTabs("graph")}<p class="muted">Boss team, connected remote teams, and their recent assignments.</p>
         ${renderOrgGraphSvg({maxAssignmentsPerTeam: 4, minHeight: 560})}`;
     }
     async function route() {
@@ -268,6 +401,7 @@ APP_HTML = r"""<!doctype html>
         renderNav();
         const path = location.hash.slice(1) || "/";
         if (path === "/") renderDashboard();
+        else if (path === "/kanban") renderKanban();
         else if (path === "/config") await renderConfig();
         else if (path === "/graph") await renderGraph();
         else if (path.startsWith("/teams/")) await renderTeam(decodeURIComponent(path.slice(7)));
@@ -281,7 +415,16 @@ APP_HTML = r"""<!doctype html>
     filter.addEventListener("input", renderNav);
     window.addEventListener("hashchange", route);
     route();
-    setInterval(async () => { state.dashboard = await api("/api/dashboard"); state.graph = null; renderNav(); }, 10000);
+    setInterval(async () => {
+      state.dashboard = await api("/api/dashboard");
+      state.graph = null;
+      renderNav();
+      const path = location.hash.slice(1) || "/";
+      if (path === "/") renderDashboard();
+      else if (path === "/kanban") renderKanban();
+      else if (path === "/graph") await renderGraph();
+      else if (path.startsWith("/hubs/")) renderHub(decodeURIComponent(path.slice(6)));
+    }, 10000);
   </script>
 </body>
 </html>"""
