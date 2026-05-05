@@ -26,6 +26,9 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "userRequestTable" in APP_HTML
     assert "Kanban" in APP_HTML
     assert "renderKanban" in APP_HTML
+    assert "Execution Tickets" in APP_HTML
+    assert "executionTicketTable" in APP_HTML
+    assert "kanbanTicketCard" in APP_HTML
     assert "renderTabs" in APP_HTML
     assert 'class="tabs"' in APP_HTML
     assert 'path === "/kanban"' in APP_HTML

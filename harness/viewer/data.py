@@ -83,6 +83,16 @@ def _decode_alert(row: Any) -> dict[str, Any]:
     return data
 
 
+def _decode_ticket(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["write_scope"] = json.loads(data.pop("write_scope_json") or "[]")
+    data["acceptance"] = json.loads(data.pop("acceptance_json") or "[]")
+    data["verification"] = json.loads(data.pop("verification_json") or "[]")
+    data["blockers"] = json.loads(data.pop("blockers_json") or "[]")
+    data["metadata"] = json.loads(data.get("metadata") or "{}")
+    return data
+
+
 def _team_dirs(factory: Path) -> list[Path]:
     teams_dir = factory / "teams"
     if not teams_dir.exists():
@@ -213,9 +223,22 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
                 """
             )
         ]
+        execution_tickets = [
+            _decode_ticket(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM execution_tickets
+                ORDER BY priority ASC, created_at DESC
+                LIMIT 100
+                """
+            )
+        ]
     hubs = sorted({team["hub"] for team in teams if team.get("hub")})
     active = sum(int(team.get("active_assignments") or 0) for team in teams)
     waiting = sum(1 for request in user_requests if request["status"] == "open")
+    active_tickets = sum(1 for ticket in execution_tickets if ticket["status"] in {"ready", "queued", "working"})
+    blocked_tickets = sum(1 for ticket in execution_tickets if ticket["status"] == "blocked")
     retrying = sum(int(team.get("retrying_assignments") or 0) for team in teams)
     stale = sum(int(team.get("stale_assignments") or 0) for team in teams)
     alert_count = len(alerts)
@@ -227,6 +250,8 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
             "teams": len(teams),
             "hubs": len(hubs),
             "active_assignments": active,
+            "active_execution_tickets": active_tickets,
+            "blocked_execution_tickets": blocked_tickets,
             "waiting_on_user": waiting,
             "retrying_assignments": retrying,
             "stale_assignments": stale,
@@ -236,6 +261,7 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
         "assignments": assignments,
         "user_requests": user_requests,
         "alerts": alerts,
+        "execution_tickets": execution_tickets,
     }
 
 

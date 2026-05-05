@@ -34,6 +34,7 @@ def test_init_db_creates_required_tables(tmp_path: Path) -> None:
         "substrate_handles",
         "assignment_sandboxes",
         "approval_requests",
+        "execution_tickets",
         "orchestrator_leases",
         "assignment_resumes",
         "operator_alerts",

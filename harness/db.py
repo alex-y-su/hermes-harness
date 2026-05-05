@@ -43,6 +43,7 @@ def _pre_migrate_existing_db(conn: sqlite3.Connection) -> None:
 def _migrate_existing_db(conn: sqlite3.Connection) -> None:
     _ensure_assignment_columns(conn)
     _ensure_assignment_sandbox_columns(conn)
+    _ensure_execution_ticket_table(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS orchestrator_leases (
@@ -61,6 +62,73 @@ def _migrate_existing_db(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS orchestrator_leases_until
           ON orchestrator_leases (leased_until)
+        """
+    )
+
+
+def _ensure_execution_ticket_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS execution_tickets (
+          ticket_id            TEXT PRIMARY KEY,
+          goal_id              TEXT,
+          parent_ticket_id     TEXT,
+          title                TEXT NOT NULL,
+          mode                 TEXT NOT NULL,
+          team_name            TEXT NOT NULL,
+          status               TEXT NOT NULL,
+          priority             INTEGER NOT NULL DEFAULT 100,
+          order_id             TEXT,
+          assignment_id        TEXT,
+          approval_request_id  TEXT,
+          body                 TEXT NOT NULL DEFAULT '',
+          write_scope_json     TEXT NOT NULL DEFAULT '[]',
+          acceptance_json      TEXT NOT NULL DEFAULT '[]',
+          verification_json    TEXT NOT NULL DEFAULT '[]',
+          blockers_json        TEXT NOT NULL DEFAULT '[]',
+          metadata             TEXT NOT NULL DEFAULT '{}',
+          created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          dispatched_at        TEXT,
+          terminal_at          TEXT
+        )
+        """
+    )
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(execution_tickets)").fetchall()
+    }
+    expected = {
+        "goal_id": "TEXT",
+        "parent_ticket_id": "TEXT",
+        "approval_request_id": "TEXT",
+        "write_scope_json": "TEXT NOT NULL DEFAULT '[]'",
+        "acceptance_json": "TEXT NOT NULL DEFAULT '[]'",
+        "verification_json": "TEXT NOT NULL DEFAULT '[]'",
+        "blockers_json": "TEXT NOT NULL DEFAULT '[]'",
+        "metadata": "TEXT NOT NULL DEFAULT '{}'",
+        "updated_at": "TEXT",
+        "dispatched_at": "TEXT",
+        "terminal_at": "TEXT",
+    }
+    for name, definition in expected.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE execution_tickets ADD COLUMN {name} {definition}")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS execution_tickets_status_priority
+          ON execution_tickets (status, priority, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS execution_tickets_team_status
+          ON execution_tickets (team_name, status, priority)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS execution_tickets_assignment
+          ON execution_tickets (assignment_id)
         """
     )
 
@@ -226,6 +294,149 @@ def upsert_assignment(
             status_reason,
             blocked_by,
         ),
+    )
+
+
+def upsert_execution_ticket(
+    conn: sqlite3.Connection,
+    *,
+    ticket_id: str,
+    title: str,
+    mode: str,
+    team_name: str,
+    status: str = "ready",
+    priority: int = 100,
+    body: str = "",
+    goal_id: str | None = None,
+    parent_ticket_id: str | None = None,
+    order_id: str | None = None,
+    assignment_id: str | None = None,
+    approval_request_id: str | None = None,
+    write_scope: list[Any] | None = None,
+    acceptance: list[Any] | None = None,
+    verification: list[Any] | None = None,
+    blockers: list[Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO execution_tickets (
+          ticket_id, goal_id, parent_ticket_id, title, mode, team_name, status,
+          priority, order_id, assignment_id, approval_request_id, body,
+          write_scope_json, acceptance_json, verification_json, blockers_json,
+          metadata, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(ticket_id) DO UPDATE SET
+          goal_id = COALESCE(excluded.goal_id, execution_tickets.goal_id),
+          parent_ticket_id = COALESCE(excluded.parent_ticket_id, execution_tickets.parent_ticket_id),
+          title = excluded.title,
+          mode = excluded.mode,
+          team_name = excluded.team_name,
+          status = excluded.status,
+          priority = excluded.priority,
+          order_id = COALESCE(excluded.order_id, execution_tickets.order_id),
+          assignment_id = COALESCE(excluded.assignment_id, execution_tickets.assignment_id),
+          approval_request_id = COALESCE(excluded.approval_request_id, execution_tickets.approval_request_id),
+          body = excluded.body,
+          write_scope_json = excluded.write_scope_json,
+          acceptance_json = excluded.acceptance_json,
+          verification_json = excluded.verification_json,
+          blockers_json = excluded.blockers_json,
+          metadata = excluded.metadata,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            ticket_id,
+            goal_id,
+            parent_ticket_id,
+            title,
+            mode,
+            team_name,
+            status,
+            priority,
+            order_id,
+            assignment_id,
+            approval_request_id,
+            body,
+            json.dumps(write_scope or [], sort_keys=True),
+            json.dumps(acceptance or [], sort_keys=True),
+            json.dumps(verification or [], sort_keys=True),
+            json.dumps(blockers or [], sort_keys=True),
+            json.dumps(metadata or {}, sort_keys=True),
+        ),
+    )
+
+
+def set_execution_ticket_status(
+    conn: sqlite3.Connection,
+    *,
+    ticket_id: str,
+    status: str,
+    assignment_id: str | None = None,
+    approval_request_id: str | None = None,
+    terminal: bool = False,
+) -> sqlite3.Row | None:
+    conn.execute(
+        """
+        UPDATE execution_tickets
+        SET status = ?,
+            assignment_id = COALESCE(?, assignment_id),
+            approval_request_id = COALESCE(?, approval_request_id),
+            dispatched_at = CASE
+              WHEN ? IN ('queued', 'dispatched', 'working') THEN COALESCE(dispatched_at, CURRENT_TIMESTAMP)
+              ELSE dispatched_at
+            END,
+            terminal_at = CASE
+              WHEN ? THEN COALESCE(terminal_at, CURRENT_TIMESTAMP)
+              ELSE terminal_at
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE ticket_id = ?
+        """,
+        (status, assignment_id, approval_request_id, status, int(terminal), ticket_id),
+    )
+    return conn.execute("SELECT * FROM execution_tickets WHERE ticket_id = ?", (ticket_id,)).fetchone()
+
+
+def get_execution_ticket(conn: sqlite3.Connection, ticket_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM execution_tickets WHERE ticket_id = ?", (ticket_id,)).fetchone()
+
+
+def list_execution_tickets(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    team_name: str | None = None,
+    goal_id: str | None = None,
+    limit: int | None = None,
+) -> list[sqlite3.Row]:
+    clauses = []
+    params: list[Any] = []
+    if status and status != "all":
+        clauses.append("status = ?")
+        params.append(status)
+    if team_name:
+        clauses.append("team_name = ?")
+        params.append(team_name)
+    if goal_id:
+        clauses.append("goal_id = ?")
+        params.append(goal_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    suffix = "LIMIT ?" if limit else ""
+    if limit:
+        params.append(limit)
+    return list(
+        conn.execute(
+            f"""
+            SELECT *
+            FROM execution_tickets
+            {where}
+            ORDER BY priority ASC, created_at ASC, ticket_id ASC
+            {suffix}
+            """,
+            params,
+        )
     )
 
 

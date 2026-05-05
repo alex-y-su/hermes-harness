@@ -11,6 +11,7 @@ from harness.tools import (
     ack_alert,
     cancel_assignment,
     explain_blockers,
+    execution_board,
     orchestrator,
     query_alerts,
     query_remote_teams,
@@ -148,6 +149,89 @@ def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
     with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
         handle = conn.execute("SELECT status FROM substrate_handles WHERE team_name = 'dev'").fetchone()
     assert handle["status"] == "archived"
+
+
+def test_execution_board_dispatch_sync_and_block(tmp_path: Path):
+    asyncio.run(
+        spawn_team.run(
+            base_args(
+                tmp_path,
+                name="dev",
+                template="single-agent",
+                substrate="external",
+                dry_run=True,
+                agent_card_url="http://team.example/.well-known/agent-card.json",
+                push_url="https://boss.example/a2a/push",
+                brief="Patch files.",
+                criteria="Return verification.",
+                timeout_seconds=30,
+            )
+        )
+    )
+
+    created = execution_board.run(
+        base_args(
+            tmp_path,
+            command="create",
+            ticket_id="tkt-ship",
+            goal_id="goal-1",
+            parent_ticket_id=None,
+            title="Ship page",
+            mode="patch",
+            team="dev",
+            priority=10,
+            order_id="goal-1",
+            body="Edit the landing page.",
+            file=None,
+            write_scope=["website/content/jesuscord/index.md"],
+            acceptance=["page exists"],
+            verification=["build passes"],
+            blocker=[],
+            metadata=None,
+            json=True,
+        )
+    )
+    assert created["ticket"]["status"] == "ready"
+
+    ticked = execution_board.run(base_args(tmp_path, command="tick", limit=5, json=True))
+    assert ticked["dispatched"][0]["assignment_id"] == "tkt-ship-patch"
+    board = query_work_board.run(base_args(tmp_path, team=None, json=True))
+    assert board["execution_ticket_counts"]["running"] == 1
+
+    with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
+        conn.execute("UPDATE team_assignments SET status = 'completed' WHERE assignment_id = 'tkt-ship-patch'")
+    synced = execution_board.run(base_args(tmp_path, command="sync", json=True))
+    assert synced["synced"][0]["status"] == "completed"
+    listed = execution_board.run(base_args(tmp_path, command="list", status="completed", team=None, goal_id=None, json=True))
+    assert listed["tickets"][0]["ticket_id"] == "tkt-ship"
+
+    blocked = execution_board.run(
+        base_args(
+            tmp_path,
+            command="create",
+            ticket_id="tkt-approval",
+            goal_id="goal-1",
+            parent_ticket_id=None,
+            title="Approve send",
+            mode="escalate",
+            team="dev",
+            priority=20,
+            order_id="goal-1",
+            body="Approve outbound batch.",
+            file=None,
+            write_scope=[],
+            acceptance=["approved"],
+            verification=[],
+            blocker=["approval"],
+            metadata=None,
+            json=True,
+        )
+    )
+    assert blocked["ticket"]["mode"] == "escalate"
+    ticked = execution_board.run(base_args(tmp_path, command="tick", limit=5, json=True))
+    assert ticked["escalated"][0]["request_id"] == "tkt-approval:approval"
+    requests = query_user_requests.run(base_args(tmp_path, status="open", team=None, assignment_id=None, json=True))
+    assert requests["requests"][0]["metadata"]["ticket_id"] == "tkt-approval"
 
 
 def test_tools_default_factory_uses_factory_dir_env(tmp_path: Path, monkeypatch) -> None:

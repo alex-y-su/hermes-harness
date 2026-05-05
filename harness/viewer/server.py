@@ -149,6 +149,8 @@ APP_HTML = r"""<!doctype html>
           <div class="card"><div class="metric">${d.counts.teams}</div><div class="muted">Teams</div></div>
           <div class="card"><div class="metric">${d.counts.hubs}</div><div class="muted">Hubs</div></div>
           <div class="card"><div class="metric">${d.counts.active_assignments}</div><div class="muted">Active assignments</div></div>
+          <div class="card"><div class="metric">${d.counts.active_execution_tickets || 0}</div><div class="muted">Active tickets</div></div>
+          <div class="card"><div class="metric">${d.counts.blocked_execution_tickets || 0}</div><div class="muted">Blocked tickets</div></div>
           <div class="card"><div class="metric">${d.counts.waiting_on_user}</div><div class="muted">Waiting on user</div></div>
           <div class="card"><div class="metric">${d.counts.retrying_assignments}</div><div class="muted">Retrying</div></div>
           <div class="card"><div class="metric">${d.counts.stale_assignments}</div><div class="muted">Stale</div></div>
@@ -161,6 +163,8 @@ APP_HTML = r"""<!doctype html>
         <section class="dashboard-graph">
           ${renderOrgGraphSvg({maxAssignmentsPerTeam: 2, viewportHeight: 420})}
         </section>
+        <h2>Execution Tickets</h2>
+        ${executionTicketTable(d.execution_tickets || [])}
         <h2>Waiting on User</h2>
         ${userRequestTable(d.user_requests || [])}
         <h2>Alerts</h2>
@@ -184,6 +188,21 @@ APP_HTML = r"""<!doctype html>
           <td class="${Number(t.stale_assignments || 0) ? "state-failed" : "muted"}">${esc(t.stale_assignments || 0)} stale</td>
           <td class="${Number(t.open_user_requests || 0) ? "state-open" : "muted"}">${esc(t.open_user_requests || 0)}</td>
           <td class="muted">${esc(t.last_event_at || "never")}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+    }
+    function executionTicketTable(tickets) {
+      if (!tickets.length) return '<p class="muted">No execution tickets.</p>';
+      return `<table><thead><tr><th>Ticket</th><th>Status</th><th>Mode</th><th>Team</th><th>Priority</th><th>Assignment</th><th>Title</th><th>Updated</th></tr></thead><tbody>
+        ${tickets.map(t => `<tr>
+          <td>${esc(t.ticket_id)}</td>
+          <td class="${statusClass(t.status)}">${esc(t.status)}</td>
+          <td>${esc(t.mode)}</td>
+          <td><a href="${linkFor("team", t.team_name)}">${esc(t.team_name)}</a></td>
+          <td>${esc(t.priority)}</td>
+          <td>${t.assignment_id ? `<a href="${linkFor("assignment", t.assignment_id)}">${esc(t.assignment_id)}</a>` : ""}</td>
+          <td>${esc(t.title)}</td>
+          <td class="muted">${esc(t.updated_at || t.created_at || "")}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
@@ -251,6 +270,18 @@ APP_HTML = r"""<!doctype html>
         <div class="muted"><a href="${linkFor("assignment", r.assignment_id)}">${esc(r.assignment_id)}</a> · ${esc(r.created_at || "")}</div>
       </article>`;
     }
+    function kanbanTicketCard(t) {
+      return `<article class="kanban-card">
+        <span class="kanban-title">${esc(t.title || t.ticket_id)}</span>
+        <div class="kanban-meta">
+          <span class="pill ${statusClass(t.status)}">${esc(t.status)}</span>
+          <span class="pill">${esc(t.mode)}</span>
+          <span class="pill"><a href="${linkFor("team", t.team_name)}">${esc(t.team_name)}</a></span>
+        </div>
+        <div class="muted">${esc(t.ticket_id)} · priority ${esc(t.priority || "")}</div>
+        ${t.assignment_id ? `<div class="muted">assignment <a href="${linkFor("assignment", t.assignment_id)}">${esc(t.assignment_id)}</a></div>` : ""}
+      </article>`;
+    }
     function kanbanColumn(title, cards, renderer) {
       return `<section class="kanban-column">
         <div class="kanban-head"><h2>${esc(title)}</h2><span class="kanban-count">${cards.length}</span></div>
@@ -261,6 +292,7 @@ APP_HTML = r"""<!doctype html>
       const d = state.dashboard;
       const assignments = d.assignments || [];
       const requests = d.user_requests || [];
+      const tickets = d.execution_tickets || [];
       const queued = assignments.filter(a => ["queued", "pending"].includes(String(a.status)));
       const running = assignments.filter(a => ["dispatched", "working", "spawned", "booted"].includes(String(a.status)));
       const waiting = requests.filter(r => String(r.status) === "open");
@@ -270,6 +302,11 @@ APP_HTML = r"""<!doctype html>
       const stale = assignments.filter(a => String(a.status) === "stale");
       const done = assignments.filter(a => String(a.status) === "completed");
       const stopped = assignments.filter(a => ["failed", "canceled", "cancel-requested", "archived"].includes(String(a.status)));
+      const ticketQueued = tickets.filter(t => ["ready", "queued"].includes(String(t.status)));
+      const ticketRunning = tickets.filter(t => String(t.status) === "working");
+      const ticketBlocked = tickets.filter(t => String(t.status) === "blocked");
+      const ticketDone = tickets.filter(t => String(t.status) === "completed");
+      const ticketStopped = tickets.filter(t => ["failed", "canceled"].includes(String(t.status)));
       app.innerHTML = `
         <div class="section-head">
           <h1>Kanban</h1>
@@ -277,6 +314,15 @@ APP_HTML = r"""<!doctype html>
         </div>
         ${renderTabs("kanban")}
         <p class="muted">${esc(d.factory)}</p>
+        <h2>Execution Tickets</h2>
+        <section class="kanban">
+          ${kanbanColumn("Ready / Queued", ticketQueued, kanbanTicketCard)}
+          ${kanbanColumn("Running", ticketRunning, kanbanTicketCard)}
+          ${kanbanColumn("Blocked", ticketBlocked, kanbanTicketCard)}
+          ${kanbanColumn("Completed", ticketDone, kanbanTicketCard)}
+          ${kanbanColumn("Stopped", ticketStopped, kanbanTicketCard)}
+        </section>
+        <h2>Assignments</h2>
         <section class="kanban">
           ${kanbanColumn("Queued", queued, kanbanAssignmentCard)}
           ${kanbanColumn("Running", running, kanbanAssignmentCard)}

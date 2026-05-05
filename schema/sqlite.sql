@@ -31,6 +31,39 @@ CREATE INDEX IF NOT EXISTS team_assignments_next_retry
 CREATE INDEX IF NOT EXISTS team_assignments_lease
   ON team_assignments (lease_expires_at);
 
+CREATE TABLE IF NOT EXISTS execution_tickets (
+  ticket_id            TEXT PRIMARY KEY,
+  goal_id              TEXT,
+  parent_ticket_id     TEXT,
+  title                TEXT NOT NULL,
+  mode                 TEXT NOT NULL,
+  team_name            TEXT NOT NULL,
+  status               TEXT NOT NULL,
+  priority             INTEGER NOT NULL DEFAULT 100,
+  order_id             TEXT,
+  assignment_id        TEXT,
+  approval_request_id  TEXT,
+  body                 TEXT NOT NULL DEFAULT '',
+  write_scope_json     TEXT NOT NULL DEFAULT '[]',
+  acceptance_json      TEXT NOT NULL DEFAULT '[]',
+  verification_json    TEXT NOT NULL DEFAULT '[]',
+  blockers_json        TEXT NOT NULL DEFAULT '[]',
+  metadata             TEXT NOT NULL DEFAULT '{}',
+  created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  dispatched_at        TEXT,
+  terminal_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS execution_tickets_status_priority
+  ON execution_tickets (status, priority, created_at);
+
+CREATE INDEX IF NOT EXISTS execution_tickets_team_status
+  ON execution_tickets (team_name, status, priority);
+
+CREATE INDEX IF NOT EXISTS execution_tickets_assignment
+  ON execution_tickets (assignment_id);
+
 CREATE TABLE IF NOT EXISTS orchestrator_leases (
   resource_type     TEXT NOT NULL,
   resource_id       TEXT NOT NULL,
