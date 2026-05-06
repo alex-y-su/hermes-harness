@@ -34,7 +34,7 @@ def test_install_and_verify_local_boss_team(tmp_path: Path) -> None:
     assert "exactly six profiles: boss, supervisor, hr, conductor, critic, and a2a-bridge" in boss_soul
     assert "Do not say you are just one assistant in chat" in boss_soul
     assert "If asked about team size, say there are six boss-team profiles" in boss_team_soul
-    assert "Specialist and execution teams from docs/team are not local hub profiles" in boss_soul
+    assert "Specialist and execution teams are not local hub profiles" in boss_soul
     assert "--substrate e2b" in (home_root / ".hermes-hr" / "TEAM_SOUL.md").read_text(encoding="utf-8")
     assert (home_root / ".hermes-boss" / "skills" / "wiki-write" / "SKILL.md").exists()
     assert (factory / "PROTOCOL.md").exists()
@@ -42,10 +42,10 @@ def test_install_and_verify_local_boss_team(tmp_path: Path) -> None:
     assert (factory / "STANDING_APPROVALS.md").exists()
     assert (factory / "wiki" / "SCHEMA.md").exists()
     assert (factory / "sources" / "_IMMUTABLE.md").exists()
-    assert (factory / "team_blueprints" / "creators.md").exists()
-    assert (factory / "team_blueprints" / "creators" / "TEAM_SOUL.md").exists()
+    assert (factory / "team_blueprints" / "research.md").exists()
+    assert (factory / "team_blueprints" / "research" / "TEAM_SOUL.md").exists()
     assert "E2B" in (factory / "team_blueprints" / "dev" / "TEAM_SOUL.md").read_text(encoding="utf-8")
-    for remote_name in ("growth", "eng", "brand", "room-engine", "video", "distro", "sermons", "creators", "dev", "churches"):
+    for remote_name in ("growth", "eng", "brand", "dev", "research", "ops"):
         assert not (home_root / f".hermes-{remote_name}").exists()
 
 

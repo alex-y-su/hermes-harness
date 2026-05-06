@@ -190,7 +190,7 @@ def test_boss_a2a_context_is_prepended_to_hermes_prompt(tmp_path: Path) -> None:
     prompt = prompt_dump.read_text(encoding="utf-8")
     assert "public Hermes Harness boss A2A endpoint" in prompt
     assert "exactly six profiles: boss, supervisor, hr, conductor, critic, and a2a-bridge" in prompt
-    assert "Specialist and execution roles from docs/team are hireable remote teams" in prompt
+    assert "Specialist and execution roles are hireable remote teams" in prompt
     assert "--blueprint <team> <team>" in prompt
     assert "how many ppl in your team?" in prompt
 

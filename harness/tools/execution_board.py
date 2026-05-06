@@ -26,7 +26,7 @@ run tests/builds, open draft PRs, deploy to staging, draft outbound packages, an
 continue independent unblocked work.
 
 Needs explicit user approval: send external messages, spend money, production DB writes,
-publish public claims, contact churches/creators, use credentials in a new system, or
+publish public claims, contact external people/accounts/partners, use credentials in a new system, or
 perform destructive changes outside the ticket scope.
 
 If blocked, create a precise blocker and continue all unblocked work. Do not stop the

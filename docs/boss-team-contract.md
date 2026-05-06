@@ -13,7 +13,7 @@ The boss team is generic and has exactly six profiles:
 | `critic` | `critic` | LLM | Reviews deliverables before boss-team acceptance. |
 | `a2a-bridge` | `a2a_bridge` | daemon | Moves work between the factory bus and remote teams over A2A. |
 
-Only these six profiles are installed on the hub machine. The specialist and execution roles described in `docs/team/04_specialist_souls.md` and `docs/team/05_team_souls.md` are not local Hermes profiles. They are copied into `factory/team_blueprints/` as hireable remote-team blueprints, then `hr` creates actual hired-team state under `factory/teams/<name>/` and runs active work on E2B.
+Only these six profiles are installed on the hub machine. Specialist and execution roles are not local Hermes profiles. They are defined in `factory/team_blueprints/` as hireable remote-team blueprints, then `hr` creates actual hired-team state under `factory/teams/<name>/` and runs active work on E2B.
 
 `hr` and `a2a-bridge` use different hub tenant IDs because the current hub API requires tenant IDs to match `^[a-z][a-z0-9_]{2,62}$`.
 
@@ -53,11 +53,11 @@ harness-boss-team apply-hub --hub-url http://127.0.0.1:18080 --token "$HERMES_HU
 harness-boss-team verify-hub --hub-url http://127.0.0.1:18080 --token "$HERMES_HUB_API_TOKEN"
 ```
 
-The local install also writes the docs/team operating bus into the factory:
+The local install also writes the generic operating bus into the factory:
 
 - `factory/PROTOCOL.md`, `factory/HARD_RULES.md`, `factory/STANDING_APPROVALS.md`
-- `factory/wiki/` and `factory/sources/` memory scaffold adapted from `docs/team/07_wiki_setup.sh`
-- `factory/team_blueprints/{growth,eng,brand,room-engine,video,distro,sermons,creators,dev,churches}/`
+- `factory/wiki/` and `factory/sources/` domain-neutral memory scaffold
+- `factory/team_blueprints/{growth,eng,brand,dev,research,ops}/`
 
 To hire one of those remote teams:
 
@@ -66,8 +66,8 @@ python3 -m harness.tools.spawn_team \
   --factory /factory \
   --substrate e2b \
   --template multi-agent \
-  --blueprint creators \
-  creators
+  --blueprint research \
+  research
 ```
 
 The spawned folder is hub-side state only. Runtime execution is per-assignment E2B through the bridge and A2A transport.

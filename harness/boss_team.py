@@ -15,6 +15,16 @@ class BossProfile:
     summary: str
 
 
+@dataclass(frozen=True)
+class RemoteBlueprint:
+    name: str
+    kind: str
+    summary: str
+    responsibilities: tuple[str, ...]
+    outputs: tuple[str, ...]
+    acceptance: tuple[str, ...]
+
+
 BOSS_PROFILES: tuple[BossProfile, ...] = (
     BossProfile("boss", "boss", "strategy", "llm", "Forms strategy and writes orders."),
     BossProfile("supervisor", "supervisor", "approval", "llm", "Signs in-envelope work and escalates novel work."),
@@ -58,39 +68,140 @@ FACTORY_DIRS: tuple[str, ...] = (
 )
 
 HUB_TENANT_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
-REPO_ROOT = Path(__file__).resolve().parents[1]
-TEAM_DOCS_DIR = REPO_ROOT / "docs" / "team"
 
-TOP_TIER_DOC_SECTIONS: dict[str, tuple[str, str]] = {
-    "boss": ("03_top_tier_souls.md", "## ROLE: "),
-    "supervisor": ("03_top_tier_souls.md", "## ROLE: "),
-    "hr": ("03_top_tier_souls.md", "## ROLE: "),
-    "conductor": ("03_top_tier_souls.md", "## ROLE: "),
-}
-
-REMOTE_BLUEPRINT_SECTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("growth", "specialist", "04_specialist_souls.md", "## ROLE: "),
-    ("eng", "specialist", "04_specialist_souls.md", "## ROLE: "),
-    ("brand", "specialist", "04_specialist_souls.md", "## ROLE: "),
-    ("room-engine", "execution", "05_team_souls.md", "## TEAM: "),
-    ("video", "execution", "05_team_souls.md", "## TEAM: "),
-    ("distro", "execution", "05_team_souls.md", "## TEAM: "),
-    ("sermons", "execution", "05_team_souls.md", "## TEAM: "),
-    ("creators", "execution", "05_team_souls.md", "## TEAM: "),
-    ("dev", "execution", "05_team_souls.md", "## TEAM: "),
-    ("churches", "execution", "05_team_souls.md", "## TEAM: "),
+REMOTE_BLUEPRINTS: tuple[RemoteBlueprint, ...] = (
+    RemoteBlueprint(
+        name="growth",
+        kind="specialist",
+        summary="Find, design, and evaluate growth experiments for the active business goal.",
+        responsibilities=(
+            "Turn the active business goal into measurable acquisition, activation, retention, and revenue hypotheses.",
+            "Create experiment tickets with success metrics, kill criteria, instrumentation needs, and review dates.",
+            "Read performance artifacts and recommend which plays to double, revise, or stop.",
+        ),
+        outputs=(
+            "experiment briefs",
+            "performance reviews",
+            "growth backlog updates",
+        ),
+        acceptance=(
+            "Every proposal states the target audience, metric, expected lift, and stop condition.",
+            "Claims are grounded in source material or marked as assumptions.",
+            "Any public launch, paid spend, external outreach, or credential use is escalated before execution.",
+        ),
+    ),
+    RemoteBlueprint(
+        name="eng",
+        kind="specialist",
+        summary="Own technical architecture, integration plans, reliability, and implementation review.",
+        responsibilities=(
+            "Assess technical feasibility and implementation risk for product and automation work.",
+            "Produce scoped technical plans, validation steps, and rollout notes.",
+            "Review shipped artifacts for regressions, missing tests, security issues, and operational risk.",
+        ),
+        outputs=(
+            "technical plans",
+            "review findings",
+            "verification reports",
+        ),
+        acceptance=(
+            "Plans name the affected systems, write scope, risks, and verification commands.",
+            "Reviews lead with concrete bugs or blockers and cite artifact paths.",
+            "Risky access, production mutation, or credential use is escalated before execution.",
+        ),
+    ),
+    RemoteBlueprint(
+        name="brand",
+        kind="specialist",
+        summary="Develop positioning, messaging, creative angles, and communication quality for the active domain.",
+        responsibilities=(
+            "Maintain voice, message framework, competitive positioning, and content principles.",
+            "Produce creative angles and copy variants tied to specific audiences and channels.",
+            "Review external-facing artifacts for clarity, differentiation, and domain fit.",
+        ),
+        outputs=(
+            "positioning briefs",
+            "message frameworks",
+            "copy and creative reviews",
+        ),
+        acceptance=(
+            "Messaging names the audience, situation, promise, proof, and channel.",
+            "External claims are supportable from source material or clearly marked for validation.",
+            "Public posting or direct outreach is escalated before execution unless covered by standing approval.",
+        ),
+    ),
+    RemoteBlueprint(
+        name="dev",
+        kind="execution",
+        summary="Implement scoped product, automation, content, or tooling changes requested by approved tickets.",
+        responsibilities=(
+            "Convert accepted specs into small implementation tasks with clear verification.",
+            "Make scoped changes in the assigned workspace and preserve unrelated user edits.",
+            "Return artifacts, diffs, test results, and unresolved blockers to the boss team.",
+        ),
+        outputs=(
+            "patches",
+            "implementation notes",
+            "test and rollout evidence",
+        ),
+        acceptance=(
+            "Work is limited to the assigned scope and includes verification evidence.",
+            "External deployment or production mutation is escalated before execution.",
+            "Unresolved blockers are recorded as execution-board blocker tickets, not hidden in prose.",
+        ),
+    ),
+    RemoteBlueprint(
+        name="research",
+        kind="specialist",
+        summary="Gather, verify, and synthesize domain, market, customer, and competitor context.",
+        responsibilities=(
+            "Ingest approved sources and produce sourced domain intelligence.",
+            "Separate facts, assumptions, opinions, and unknowns.",
+            "Promote reusable knowledge into the wiki with source paths and confidence levels.",
+        ),
+        outputs=(
+            "research briefs",
+            "source summaries",
+            "wiki updates",
+        ),
+        acceptance=(
+            "Every factual claim has a source or an explicit confidence marker.",
+            "Research includes implications and recommended next tickets when useful.",
+            "Private, paid, or credentialed sources are accessed only after approval.",
+        ),
+    ),
+    RemoteBlueprint(
+        name="ops",
+        kind="execution",
+        summary="Maintain cadence, schedules, project hygiene, and cross-team throughput.",
+        responsibilities=(
+            "Track schedules, stale tickets, blocked work, and handoffs across active teams.",
+            "Prepare daily and weekly operating summaries for the boss team.",
+            "Surface process bottlenecks and propose system-level improvements through artifacts.",
+        ),
+        outputs=(
+            "schedule reviews",
+            "status reports",
+            "throughput improvement tickets",
+        ),
+        acceptance=(
+            "Reports distinguish completed work, blocked work, and next actions.",
+            "Aging or blocked work is linked to execution-board tickets.",
+            "Process changes that alter approvals, access, or production behavior are escalated.",
+        ),
+    ),
 )
 
 REMOTE_TEAM_BOUNDARY = """## Hermes Harness Deployment Boundary
 
-This deployment adapts the original docs/team operating model to Hermes Harness:
+This deployment uses Hermes Harness as a domain-neutral orchestration layer:
 - The hub machine runs only the six local boss-team profiles: boss, supervisor, hr, conductor, critic, and a2a-bridge.
 - Only boss is user-facing. All other local profiles are internal.
-- Specialist and execution roles from docs/team are not local Hermes profiles on the hub machine.
-- hr hires those roles from factory/team_blueprints into factory/teams/<name>/ and executes them on E2B machines.
+- Specialist and execution roles are hireable blueprints, not local Hermes profiles on the hub machine.
+- hr hires those roles from factory/team_blueprints into factory/teams/<name>/ and executes them on isolated remote machines.
 - The hub keeps local state, assignments, transport metadata, status, artifacts, and audit trails. Remote teams do their active work in E2B.
 - Use Codex OAuth through provider openai-codex. Do not configure OpenRouter keys or direct OpenAI API keys.
-- Where the source docs say "14 profiles" or "profile create", read that as "six local boss profiles plus remote E2B teams created by harness.tools.spawn_team".
+- Domain-specific product goals, audiences, channels, and content rules belong in deployment config, orders, team briefs, skills, and wiki pages.
 """
 
 HR_REMOTE_SPAWN_COMMAND = (
@@ -119,6 +230,56 @@ morning_digest_at: "07:30"
     "PERFORMANCE.md": "# PERFORMANCE.md\n\nPending generation by growth remote team.\n",
 }
 
+GENERIC_PROTOCOL = f"""# PROTOCOL.md
+
+{REMOTE_TEAM_BOUNDARY}
+
+## Operating Loop
+- Boss is the only user-facing profile and speaks for the boss team.
+- Internal profiles coordinate through factory files, execution-board tickets, schedules, and A2A updates.
+- Work should be represented as bounded tickets with owner, scope, acceptance criteria, and review evidence.
+- Blocked work stays visible as a blocker ticket while unrelated work continues.
+- Remote teams must write status and artifacts back under factory/teams/<name>/.
+- Critic reviews meaningful deliverables before boss treats them as complete.
+
+## Approval Flow
+- In-envelope internal planning, research synthesis, local draft creation, and local code review can proceed without user interruption.
+- External outreach, public publication, paid spend, production mutation, credential use, irreversible data changes, or legal/compliance-sensitive actions require standing approval or explicit user approval.
+- Approval requests should be concrete: requested action, reason, blast radius, expiry, and fallback if denied.
+"""
+
+GENERIC_HARD_RULES = """# HARD_RULES.md
+
+## Universal Guardrails
+- Never expose secrets in logs, tickets, artifacts, or chat.
+- Never use credentials, mutate production, contact external parties, publish content, or spend money unless covered by standing approval or explicit user approval.
+- Never invent facts. Mark assumptions and confidence levels.
+- Never hide blockers. Create or update blocker tickets with the exact missing input or approval.
+- Never let one blocked ticket stop unrelated active work.
+- Never create broad write scopes when a small scoped task is enough.
+- Preserve unrelated user changes in any workspace.
+
+## Remote Execution
+- Remote teams work in isolated workspaces and receive only the context needed for their assignment.
+- Remote teams return artifacts, status, verification evidence, and blockers through the factory bus.
+- Remote teams do not read unrelated system directories or shared secrets unless the assignment explicitly grants that context.
+"""
+
+GENERIC_STANDING_APPROVALS = """# STANDING_APPROVALS.md
+
+No domain-specific standing approvals are granted by the generic harness template.
+
+Deployments may add project-specific standing approvals here. Each approval should include:
+- class
+- allowed action
+- limits
+- expiry or review cadence
+- owner
+- audit path
+
+Absent a matching standing approval, external publication, outreach, credential use, paid spend, production mutation, and irreversible data changes must escalate to the user.
+"""
+
 WIKI_SCHEMA = """# Karpathy Wiki Schema (Layer 3)
 
 Layer 1 factory/sources/: immutable raw source material. Append, never edit.
@@ -135,7 +296,7 @@ Cross-refs: Obsidian-style [[wikilinks]]. Indexer regenerates INDEX.md on every 
 Frontmatter for every wiki page:
 ---
 title: ...
-type: pastor | creator | church | conference | campaign | audience | competitor | voice | opportunity | lesson | runbook
+type: domain | customer | account | partner | campaign | audience | competitor | voice | opportunity | lesson | runbook | experiment | artifact
 created_by: <profile-or-team>
 created_at: <ISO8601>
 updated_at: <ISO8601>
@@ -155,12 +316,13 @@ Auto-regenerated by wiki-index-regen on wiki writes.
 - [[audience/]]
 - [[voice/]]
 - [[competitive/]]
-- [[pastors/]]
-- [[creators/]]
-- [[churches/]]
-- [[conferences/]]
+- [[domains/]]
+- [[customers/]]
+- [[partners/]]
 - [[opportunities/]]
 - [[campaigns/]]
+- [[experiments/]]
+- [[metrics/]]
 - [[lessons/]]
 - [[skills-library/]]
 - [[branding/]]
@@ -221,7 +383,7 @@ Process raw input from factory/sources/inbound/ into relevant wiki pages.
 
 Steps:
 1. Read raw input.
-2. Classify: pastor, creator, church, competitive, trend, transcript, or manual.
+2. Classify: domain, customer, account, partner, campaign, audience, competitor, trend, artifact, or manual.
 3. Extract structured facts.
 4. Per fact: create wiki page, append to existing wiki page, or keep in MEMORY.md.
 5. Write with sources: [<inbound path>] frontmatter.
@@ -257,77 +419,40 @@ def _write_text(path: Path, content: str, overwrite: bool) -> bool:
     return True
 
 
-def _read_team_doc(filename: str) -> str:
-    path = TEAM_DOCS_DIR / filename
-    return path.read_text(encoding="utf-8")
+def _yaml_list(values: tuple[str, ...], *, indent: str = "  ") -> str:
+    return "".join(f"{indent}- {value}\n" for value in values)
 
 
-def _extract_section(filename: str, marker_prefix: str, name: str) -> str:
-    text = _read_team_doc(filename)
-    lines = text.splitlines()
-    marker = f"{marker_prefix}{name}"
-    collecting = False
-    selected: list[str] = []
-    for line in lines:
-        if line.startswith(marker_prefix):
-            if collecting:
-                break
-            if line.strip() == marker:
-                collecting = True
-                continue
-        elif line.startswith("## ") and collecting:
-            break
-        if collecting:
-            selected.append(line)
-    body = "\n".join(selected).strip()
-    if not body:
-        raise ValueError(f"missing section {marker!r} in {filename}")
-    return body + "\n"
+def _markdown_list(values: tuple[str, ...]) -> str:
+    return "".join(f"- {value}\n" for value in values)
 
 
-def _factory_doc(filename: str, *, heading: str) -> str:
-    source = _read_team_doc(filename)
-    return (
-        f"# {heading}\n\n"
-        f"Source: docs/team/{filename}\n\n"
-        f"{REMOTE_TEAM_BOUNDARY}\n"
-        "The source text below is preserved as the operating contract. Any instruction "
-        "to create or operate specialist/execution local profiles is superseded by the "
-        "E2B remote-team boundary above.\n\n"
-        "---\n\n"
-        f"{source}"
-    )
-
-
-def _brief_from_section(section: str, name: str) -> str:
-    paragraphs = [part.strip() for part in section.split("\n\n") if part.strip()]
-    if not paragraphs:
-        return f"{name} remote team."
-    return "\n\n".join(paragraphs[:2])
-
-
-def _render_blueprint_yaml(name: str, kind: str, source_file: str, marker_prefix: str) -> str:
-    marker_kind = "ROLE" if "ROLE" in marker_prefix else "TEAM"
+def _render_blueprint_yaml(blueprint: RemoteBlueprint) -> str:
+    name = blueprint.name
     return (
         f"name: {name}\n"
-        f"kind: {kind}\n"
+        f"kind: {blueprint.kind}\n"
         "substrate: e2b\n"
         "template: multi-agent-team\n"
-        f"source_file: docs/team/{source_file}\n"
-        f"source_marker: \"## {marker_kind}: {name}\"\n"
+        f"summary: {blueprint.summary}\n"
         f"spawn_command: \"{HR_REMOTE_SPAWN_COMMAND.replace('<team>', name)}\"\n"
+        "responsibilities:\n"
+        f"{_yaml_list(blueprint.responsibilities)}"
         "inputs:\n"
         "  - factory assignments copied to factory/teams/<name>/inbox/\n"
         "  - factory/wiki curated memory\n"
         "  - factory/sources immutable raw material\n"
         "outputs:\n"
+        f"{_yaml_list(blueprint.outputs)}"
         "  - factory/teams/<name>/outbox/ artifacts\n"
-        "  - factory/teams/<name>/status.json heartbeats\n"
+        "  - factory/teams/<name>/status.json heartbeat\n"
+        "acceptance:\n"
+        f"{_yaml_list(blueprint.acceptance)}"
         "approval_gates:\n"
         "  - factory/HARD_RULES.md\n"
         "  - factory/STANDING_APPROVALS.md\n"
         "budget_caps:\n"
-        "  - factory/HARD_RULES.md §1\n"
+        "  - factory/HARD_RULES.md\n"
     )
 
 
@@ -353,50 +478,66 @@ def _render_blueprint_agents(name: str) -> str:
     )
 
 
-def _render_blueprint_markdown(name: str, kind: str, source_file: str, marker_prefix: str) -> str:
-    section = _extract_section(source_file, marker_prefix, name)
+def _render_blueprint_markdown(blueprint: RemoteBlueprint) -> str:
+    name = blueprint.name
     return (
         f"# {name} Remote Team Blueprint\n\n"
-        f"Kind: {kind}\n"
-        f"Source: docs/team/{source_file} `{marker_prefix}{name}`\n"
+        f"Kind: {blueprint.kind}\n"
         "Substrate: E2B\n"
         "Base template: multi-agent-team\n\n"
+        f"{blueprint.summary}\n\n"
         f"{REMOTE_TEAM_BOUNDARY}\n"
         f"## Spawn\n\n```bash\n{HR_REMOTE_SPAWN_COMMAND.replace('<team>', name)}\n```\n\n"
-        "## Source Soul\n\n"
-        f"{section}"
+        "## Responsibilities\n\n"
+        f"{_markdown_list(blueprint.responsibilities)}\n"
+        "## Outputs\n\n"
+        f"{_markdown_list(blueprint.outputs)}\n"
+        "## Acceptance\n\n"
+        f"{_markdown_list(blueprint.acceptance)}"
     )
 
 
 def _write_blueprints(factory_dir: Path, *, overwrite: bool) -> None:
     root = factory_dir / "team_blueprints"
-    for name, kind, source_file, marker_prefix in REMOTE_BLUEPRINT_SECTIONS:
-        section = _extract_section(source_file, marker_prefix, name)
-        blueprint = _render_blueprint_markdown(name, kind, source_file, marker_prefix)
-        _write_text(root / f"{name}.md", blueprint, overwrite)
+    for blueprint in REMOTE_BLUEPRINTS:
+        name = blueprint.name
+        markdown = _render_blueprint_markdown(blueprint)
+        _write_text(root / f"{name}.md", markdown, overwrite)
         team_root = root / name
-        _write_text(team_root / "blueprint.yaml", _render_blueprint_yaml(name, kind, source_file, marker_prefix), overwrite)
-        _write_text(team_root / "brief.md", f"# {name} Brief\n\n{_brief_from_section(section, name)}\n", overwrite)
-        _write_text(team_root / "TEAM_SOUL.md", f"# {name} TEAM_SOUL\n\n{REMOTE_TEAM_BOUNDARY}\n## Source Soul\n\n{section}", overwrite)
-        _write_text(team_root / "criteria.md", f"# {name} Criteria\n\nComplete assigned work, report artifacts through A2A, and obey the source hard rules below.\n\n{section}", overwrite)
+        _write_text(team_root / "blueprint.yaml", _render_blueprint_yaml(blueprint), overwrite)
+        _write_text(team_root / "brief.md", f"# {name} Brief\n\n{blueprint.summary}\n", overwrite)
+        _write_text(
+            team_root / "TEAM_SOUL.md",
+            (
+                f"# {name} TEAM_SOUL\n\n"
+                f"{REMOTE_TEAM_BOUNDARY}\n"
+                f"## Mission\n\n{blueprint.summary}\n\n"
+                f"## Responsibilities\n\n{_markdown_list(blueprint.responsibilities)}\n"
+                f"## Outputs\n\n{_markdown_list(blueprint.outputs)}\n"
+                f"## Acceptance\n\n{_markdown_list(blueprint.acceptance)}"
+            ),
+            overwrite,
+        )
+        _write_text(
+            team_root / "criteria.md",
+            (
+                f"# {name} Criteria\n\n"
+                "Complete assigned work, report artifacts through A2A, and obey the factory hard rules.\n\n"
+                f"{_markdown_list(blueprint.acceptance)}"
+            ),
+            overwrite,
+        )
         _write_text(team_root / "AGENTS.md", _render_blueprint_agents(name), overwrite)
-        if name == "room-engine":
-            _write_text(
-                team_root / "skills" / "room-concept-generator" / "SKILL.md",
-                "# room-concept-generator\n\nGenerate room concepts using the concept envelope from TEAM_SOUL.md.\n",
-                overwrite,
-            )
 
 
 def _write_wiki_scaffold(factory_dir: Path, *, overwrite: bool) -> None:
     sources = factory_dir / "sources"
     wiki = factory_dir / "wiki"
     source_dirs = (
-        "pastors",
-        "corpus",
-        "platforms",
-        "transcripts",
+        "raw",
         "public",
+        "research",
+        "telemetry",
         "inbound",
         "manual_uploads",
     )
@@ -404,12 +545,13 @@ def _write_wiki_scaffold(factory_dir: Path, *, overwrite: bool) -> None:
         "audience",
         "voice",
         "competitive",
-        "pastors",
-        "creators",
-        "churches",
-        "conferences",
+        "domains",
+        "customers",
+        "partners",
         "opportunities",
         "campaigns",
+        "experiments",
+        "metrics",
         "lessons",
         "skills-library",
         "branding",
@@ -441,100 +583,77 @@ def _write_wiki_scaffold(factory_dir: Path, *, overwrite: bool) -> None:
     )
     _write_text(wiki / ".obsidian" / "community-plugins.json", '["dataview","templater-obsidian"]\n', overwrite)
     _write_text(
-        wiki / ".templates" / "pastor.md",
+        wiki / ".templates" / "domain.md",
         """---
 title: <% tp.file.title %>
-type: pastor
+type: domain
 created_at: <% tp.date.now("YYYY-MM-DDTHH:mm:ssZ") %>
 sources: []
 confidence: medium
 review_status: draft
-clip_auth: false
 ---
 
 # <% tp.file.title %>
 
-## Identity
-- Church:
-- Denomination:
-- Location:
-- Languages:
+## Context
+- Market:
+- Audience:
+- Product:
+- Geography:
 
-## Reach
-- Followers:
-- Audience size:
-- Primary platforms:
+## Useful Facts
 
-## Content
-- Sermon archive URL:
-- Podcast URL:
-- Recent themes:
-
-## Notes
+## Open Questions
 """,
         overwrite,
     )
     _write_text(
-        wiki / ".templates" / "creator.md",
+        wiki / ".templates" / "customer.md",
         """---
 title: <% tp.file.title %>
-type: creator
+type: customer
 created_at: <% tp.date.now("YYYY-MM-DDTHH:mm:ssZ") %>
 sources: []
 confidence: medium
 review_status: draft
-funnel_state: prospected
 ---
 
 # <% tp.file.title %>
 
-## Identity
-- Niche:
-- Platforms:
-- Followers:
+## Segment
+- Need:
+- Current alternative:
+- Trigger:
+
+## Evidence
+
+## Implications
+""",
+        overwrite,
+    )
+    _write_text(
+        wiki / ".templates" / "experiment.md",
+        """---
+title: <% tp.file.title %>
+type: experiment
+created_at: <% tp.date.now("YYYY-MM-DDTHH:mm:ssZ") %>
+sources: []
+confidence: medium
+review_status: draft
+status: proposed
+---
+
+# <% tp.file.title %>
+
+## Hypothesis
 
 ## Audience
 
-## Outreach
-- Status:
-- Last contact:
-- Next step:
-""",
-        overwrite,
-    )
-    _write_text(
-        wiki / ".templates" / "church.md",
-        """---
-title: <% tp.file.title %>
-type: church
-created_by: churches
-created_at: <% tp.date.now("YYYY-MM-DDTHH:mm:ssZ") %>
-sources: []
-confidence: medium
-review_status: draft
-hub_status: prebuilt
----
+## Metric
+- Success:
+- Kill:
 
-# <% tp.file.title %>
-
-## Public info
-- Denomination:
-- Location:
-- Service times:
-- Website:
-- Sermon RSS:
-
-## Hub status
-- Pre-built:
-- Notified:
-- Claimed:
-- Customized:
-
-## Bots configured
-- ContentBot:
-- GreeterBot:
-- DiscussionBot:
-- PrayerBot:
+## Results
 """,
         overwrite,
     )
@@ -545,15 +664,15 @@ hub_status: prebuilt
 
 def _write_factory_contract(factory_dir: Path, *, overwrite: bool) -> None:
     docs = {
-        "PROTOCOL.md": _factory_doc("06_protocol.md", heading="PROTOCOL.md"),
-        "HARD_RULES.md": _factory_doc("HARD_RULES.md", heading="HARD_RULES.md"),
-        "STANDING_APPROVALS.md": _factory_doc("STANDING_APPROVALS.md", heading="STANDING_APPROVALS.md"),
+        "PROTOCOL.md": GENERIC_PROTOCOL,
+        "HARD_RULES.md": GENERIC_HARD_RULES,
+        "STANDING_APPROVALS.md": GENERIC_STANDING_APPROVALS,
     }
     for rel, content in docs.items():
         _write_text(factory_dir / rel, content, overwrite)
     for rel, content in FACTORY_TEXT_FILES.items():
         _write_text(factory_dir / rel, content, overwrite)
-    for dirname in ("emails", "social", "pitches", "room_concepts", "videos", "paid_spend"):
+    for dirname in ("messages", "publications", "experiments", "product_specs", "patches", "spend_requests"):
         (factory_dir / "drafts" / dirname).mkdir(parents=True, exist_ok=True)
         (factory_dir / "approvals" / dirname).mkdir(parents=True, exist_ok=True)
     _write_wiki_scaffold(factory_dir, overwrite=overwrite)
@@ -632,8 +751,8 @@ def render_soul(profile: BossProfile) -> str:
             "The boss team has exactly six profiles: boss, supervisor, hr, conductor, critic, "
             "and a2a-bridge. Only boss is user-facing; supervisor, hr, conductor, critic, and "
             "a2a-bridge are internal roles behind the local factory bus.\n"
-            "Specialist and execution teams from docs/team are not local hub profiles. They are "
-            "hireable E2B remote teams under factory/team_blueprints, created by hr under "
+            "Specialist and execution teams are not local hub profiles. They are "
+            "hireable remote teams under factory/team_blueprints, created by hr under "
             "factory/teams when a signed order requires them.\n"
             "Work through the factory bus, leave auditable artifacts, continue until criteria "
             "are met or a hard blocker is recorded, and escalate only when the protocol requires it.\n"
@@ -670,19 +789,10 @@ def render_team_soul(profile: BossProfile) -> str:
             "\n"
             "Remote hiring command:\n\n"
             f"```bash\n{HR_REMOTE_SPAWN_COMMAND}\n```\n\n"
-            "Use a concrete blueprint name such as `creators`, `dev`, or `growth` in place of `<team>`. "
+            "Use a concrete blueprint name such as `research`, `dev`, or `growth` in place of `<team>`. "
             "The resulting hired team folder is local state; the execution substrate is E2B.\n"
         )
-    if profile.name in TOP_TIER_DOC_SECTIONS:
-        filename, marker_prefix = TOP_TIER_DOC_SECTIONS[profile.name]
-        body += (
-            "\n## Source Operating Soul\n\n"
-            f"Adapted from docs/team/{filename} `{marker_prefix}{profile.name}`. "
-            "The E2B remote-team boundary above overrides any legacy instruction to create "
-            "additional local profiles or tmux sessions.\n\n"
-            f"{_extract_section(filename, marker_prefix, profile.name)}"
-        )
-    elif profile.name == "critic":
+    if profile.name == "critic":
         body += (
             "\n"
             "Critic reviews outputs before boss accepts them. Focus on protocol compliance, "
@@ -764,7 +874,8 @@ def verify_local_boss_team(factory_dir: Path, home_root: Path, *, layout: str = 
             missing.append(str(factory_dir / "wiki" / filename))
     if not (factory_dir / "sources" / "_IMMUTABLE.md").is_file():
         missing.append(str(factory_dir / "sources" / "_IMMUTABLE.md"))
-    for name, _kind, _source_file, _marker_prefix in REMOTE_BLUEPRINT_SECTIONS:
+    for blueprint in REMOTE_BLUEPRINTS:
+        name = blueprint.name
         if not (factory_dir / "team_blueprints" / f"{name}.md").is_file():
             missing.append(str(factory_dir / "team_blueprints" / f"{name}.md"))
         if not (factory_dir / "team_blueprints" / name / "TEAM_SOUL.md").is_file():

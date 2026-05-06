@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +28,8 @@ DOC_FALLBACKS = [
     REPO_ROOT / "bus_template" / "BLACKBOARD.md",
     REPO_ROOT / "bus_template" / "PRIORITIZE.md",
     REPO_ROOT / "bus_template" / "QUIET_HOURS.md",
-    REPO_ROOT / "docs" / "team" / "00_OVERVIEW.md",
-    REPO_ROOT / "docs" / "team" / "03_top_tier_souls.md",
-    REPO_ROOT / "docs" / "team" / "06_protocol.md",
-    REPO_ROOT / "docs" / "team" / "HARD_RULES.md",
-    REPO_ROOT / "docs" / "team" / "STANDING_APPROVALS.md",
+    REPO_ROOT / "docs" / "boss-team-contract.md",
+    REPO_ROOT / "docs" / "root-team-config-organization.md",
 ]
 
 
@@ -91,6 +89,91 @@ def _decode_ticket(row: Any) -> dict[str, Any]:
     data["blockers"] = json.loads(data.pop("blockers_json") or "[]")
     data["metadata"] = json.loads(data.get("metadata") or "{}")
     return data
+
+
+def _safe_schedule_error(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) > 500:
+        return text[:497] + "..."
+    return text
+
+
+def _decode_schedule_job(profile: str, job: dict[str, Any]) -> dict[str, Any]:
+    repeat = job.get("repeat") if isinstance(job.get("repeat"), dict) else {}
+    return {
+        "profile": profile,
+        "job_id": job.get("id"),
+        "name": job.get("name") or job.get("id"),
+        "enabled": bool(job.get("enabled", True)),
+        "state": job.get("state") or ("scheduled" if job.get("enabled", True) else "paused"),
+        "schedule": job.get("schedule_display") or (job.get("schedule") or {}).get("display") or "",
+        "next_run_at": job.get("next_run_at"),
+        "last_run_at": job.get("last_run_at"),
+        "last_status": job.get("last_status"),
+        "last_error": _safe_schedule_error(job.get("last_error") or job.get("last_delivery_error")),
+        "script": job.get("script"),
+        "no_agent": bool(job.get("no_agent", False)),
+        "deliver": job.get("deliver"),
+        "workdir": job.get("workdir"),
+        "repeat_times": repeat.get("times"),
+        "repeat_completed": repeat.get("completed"),
+        "created_at": job.get("created_at"),
+        "paused_at": job.get("paused_at"),
+        "paused_reason": job.get("paused_reason"),
+    }
+
+
+def schedules(hermes_home: Path | None = None) -> dict[str, Any]:
+    home = hermes_home or Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+    stores: list[tuple[str, Path]] = []
+    root_store = home / "cron" / "jobs.json"
+    if root_store.exists():
+        stores.append(("default", root_store))
+    profiles_dir = home / "profiles"
+    if profiles_dir.exists():
+        stores.extend(
+            (profile_dir.name, profile_dir / "cron" / "jobs.json")
+            for profile_dir in sorted(profiles_dir.iterdir(), key=lambda path: path.name)
+            if profile_dir.is_dir() and (profile_dir / "cron" / "jobs.json").exists()
+        )
+
+    jobs: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    updated_at: dict[str, Any] = {}
+    for profile, path in stores:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            errors.append({"profile": profile, "path": str(path), "error": str(error)})
+            continue
+        if isinstance(payload, dict):
+            updated_at[profile] = payload.get("updated_at")
+            raw_jobs = payload.get("jobs") or []
+        elif isinstance(payload, list):
+            raw_jobs = payload
+        else:
+            errors.append({"profile": profile, "path": str(path), "error": "unsupported jobs.json shape"})
+            continue
+        for job in raw_jobs:
+            if isinstance(job, dict):
+                jobs.append(_decode_schedule_job(profile, job))
+
+    jobs.sort(key=lambda job: (not job["enabled"], job.get("next_run_at") or "9999", job["profile"], job.get("name") or ""))
+    return {
+        "hermes_home": str(home),
+        "stores": [{"profile": profile, "path": str(path)} for profile, path in stores],
+        "updated_at": updated_at,
+        "errors": errors,
+        "counts": {
+            "jobs": len(jobs),
+            "active": sum(1 for job in jobs if job["enabled"]),
+            "paused": sum(1 for job in jobs if not job["enabled"] or job["state"] == "paused"),
+            "last_failed": sum(1 for job in jobs if job.get("last_status") not in (None, "ok")),
+        },
+        "jobs": jobs,
+    }
 
 
 def _team_dirs(factory: Path) -> list[Path]:

@@ -56,7 +56,7 @@ When the user asks boss to change root-team behavior:
    /opt/hermes-harness/scripts/factory_config_versions.sh new <short-label>
    ```
 
-2. Edit the normal compatibility paths, for example `/factory/PRIORITIZE.md` or `/factory/team_blueprints/creators/TEAM_SOUL.md`.
+2. Edit the normal compatibility paths, for example `/factory/PRIORITIZE.md` or `/factory/team_blueprints/research/TEAM_SOUL.md`.
 
 3. Report the active version from:
 

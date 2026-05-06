@@ -44,13 +44,9 @@ cat >"$FACTORY_DIR/GOALS.md" <<'EOF_GOALS'
   - growth
   - eng
   - brand
-  - room-engine
-  - video
-  - distro
-  - sermons
-  - creators
   - dev
-  - churches
+  - research
+  - ops
 - constraints:
   - no external outreach without explicit user approval or standing approval.
   - no paid expansion beyond configured Hermes/Codex/E2B test budget without user approval.

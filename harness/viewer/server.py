@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from harness import db
 from harness.factory import factory_path
 from harness.viewer import auth
-from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, team_detail
+from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, schedules, team_detail
 
 
 APP_HTML = r"""<!doctype html>
@@ -76,7 +76,9 @@ APP_HTML = r"""<!doctype html>
     .tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin: 14px 0 18px; }
     .tabs a { display: inline-flex; align-items: center; min-height: 34px; padding: 7px 10px; color: var(--muted); border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; }
     .tabs a.active { color: var(--accent); border-color: var(--line); background: var(--panel); }
-    .kanban { display: grid; grid-template-columns: repeat(7, minmax(240px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+    .kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; padding-bottom: 8px; }
+    .kanban--tickets { grid-template-columns: repeat(5, minmax(240px, 1fr)); overflow-x: auto; }
+    .kanban-row + .kanban-row { margin-top: 12px; }
     .kanban-column { min-width: 240px; border: 1px solid var(--line); background: #15191d; border-radius: 8px; padding: 10px; }
     .kanban-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
     .kanban-head h2 { margin: 0; font-size: 14px; }
@@ -86,7 +88,7 @@ APP_HTML = r"""<!doctype html>
     .kanban-title { display: block; font-weight: 650; overflow-wrap: anywhere; }
     .kanban-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .kanban-empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 10px; min-height: 56px; }
-    @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } .kanban { grid-template-columns: repeat(7, 260px); } }
+    @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } .kanban, .kanban--tickets { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -122,6 +124,7 @@ APP_HTML = r"""<!doctype html>
       nav.innerHTML = `
         <a href="#/" data-route="/">Dashboard</a>
         <a href="#/kanban" data-route="/kanban">Kanban</a>
+        <a href="#/schedules" data-route="/schedules">Schedules</a>
         <a href="#/config" data-route="/config">Hub Config</a>
         <a href="#/graph" data-route="/graph">Graph</a>
         ${(state.dashboard?.hubs || []).map(h => `<a href="${linkFor("hub", h)}">Hub: ${esc(h)}</a>`).join("")}
@@ -134,6 +137,7 @@ APP_HTML = r"""<!doctype html>
       const tabs = [
         {id: "dashboard", label: "Dashboard", href: "#/"},
         {id: "kanban", label: "Kanban", href: "#/kanban"},
+        {id: "schedules", label: "Schedules", href: "#/schedules"},
         {id: "graph", label: "Graph", href: "#/graph"},
         {id: "config", label: "Hub Config", href: "#/config"}
       ];
@@ -315,7 +319,7 @@ APP_HTML = r"""<!doctype html>
         ${renderTabs("kanban")}
         <p class="muted">${esc(d.factory)}</p>
         <h2>Execution Tickets</h2>
-        <section class="kanban">
+        <section class="kanban kanban--tickets">
           ${kanbanColumn("Ready / Queued", ticketQueued, kanbanTicketCard)}
           ${kanbanColumn("Running", ticketRunning, kanbanTicketCard)}
           ${kanbanColumn("Blocked", ticketBlocked, kanbanTicketCard)}
@@ -323,11 +327,13 @@ APP_HTML = r"""<!doctype html>
           ${kanbanColumn("Stopped", ticketStopped, kanbanTicketCard)}
         </section>
         <h2>Assignments</h2>
-        <section class="kanban">
+        <section class="kanban kanban-row">
           ${kanbanColumn("Queued", queued, kanbanAssignmentCard)}
           ${kanbanColumn("Running", running, kanbanAssignmentCard)}
           ${kanbanColumn("Waiting on User", waiting, kanbanRequestCard)}
           ${kanbanColumn("Resuming", [...resumingRequests, ...resumingAssignments], card => card.request_id ? kanbanRequestCard(card) : kanbanAssignmentCard(card))}
+        </section>
+        <section class="kanban kanban-row">
           ${kanbanColumn("Retrying", retrying, kanbanAssignmentCard)}
           ${kanbanColumn("Stale", stale, kanbanAssignmentCard)}
           ${kanbanColumn("Completed", done, kanbanAssignmentCard)}
@@ -367,6 +373,49 @@ APP_HTML = r"""<!doctype html>
           <p class="muted">${esc(file.path)}</p>
           <pre>${esc(file.body || "Empty file.")}</pre>
         </section>`).join("") || '<p class="muted">No config files found.</p>'}`;
+    }
+    async function renderSchedules() {
+      const s = await api("/api/schedules");
+      app.innerHTML = `
+        <div class="section-head">
+          <h1>Schedules</h1>
+          <span class="pill">read-only</span>
+        </div>
+        ${renderTabs("schedules")}
+        <p class="muted">${esc(s.hermes_home)}</p>
+        <section class="grid">
+          <div class="card"><div class="metric">${esc(s.counts.jobs || 0)}</div><div class="muted">Jobs</div></div>
+          <div class="card"><div class="metric">${esc(s.counts.active || 0)}</div><div class="muted">Active</div></div>
+          <div class="card"><div class="metric">${esc(s.counts.paused || 0)}</div><div class="muted">Paused</div></div>
+          <div class="card"><div class="metric">${esc(s.counts.last_failed || 0)}</div><div class="muted">Last failed</div></div>
+        </section>
+        ${scheduleErrorTable(s.errors || [])}
+        <h2>Jobs</h2>
+        ${scheduleTable(s.jobs || [])}
+      `;
+    }
+    function scheduleErrorTable(errors) {
+      if (!errors.length) return "";
+      return `<h2>Read Errors</h2><table><thead><tr><th>Profile</th><th>Path</th><th>Error</th></tr></thead><tbody>
+        ${errors.map(e => `<tr><td>${esc(e.profile)}</td><td class="muted">${esc(e.path)}</td><td class="state-failed">${esc(e.error)}</td></tr>`).join("")}
+      </tbody></table>`;
+    }
+    function scheduleTable(jobs) {
+      if (!jobs.length) return '<p class="muted">No schedules found.</p>';
+      return `<table><thead><tr><th>Profile</th><th>Name</th><th>State</th><th>Schedule</th><th>Next Run</th><th>Last Run</th><th>Last Status</th><th>Script</th><th>Mode</th><th>Runs</th></tr></thead><tbody>
+        ${jobs.map(j => `<tr>
+          <td>${esc(j.profile)}</td>
+          <td><strong>${esc(j.name || j.job_id)}</strong><div class="muted">${esc(j.job_id || "")}</div></td>
+          <td class="${j.enabled ? statusClass(j.state) : "state-open"}">${esc(j.enabled ? j.state : "paused")}${j.paused_reason ? `<div class="muted">${esc(j.paused_reason)}</div>` : ""}</td>
+          <td>${esc(j.schedule)}</td>
+          <td class="muted">${esc(j.next_run_at || "")}</td>
+          <td class="muted">${esc(j.last_run_at || "")}</td>
+          <td class="${j.last_status && j.last_status !== "ok" ? "state-failed" : "muted"}">${esc(j.last_status || "")}${j.last_error ? `<div class="state-failed">${esc(j.last_error)}</div>` : ""}</td>
+          <td>${esc(j.script || "")}${j.workdir ? `<div class="muted">${esc(j.workdir)}</div>` : ""}</td>
+          <td>${j.no_agent ? "script" : "agent"}${j.deliver ? `<div class="muted">${esc(j.deliver)}</div>` : ""}</td>
+          <td>${esc(j.repeat_completed ?? 0)}${j.repeat_times == null ? '<span class="muted"> / ∞</span>' : `<span class="muted"> / ${esc(j.repeat_times)}</span>`}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
     }
     function assignmentTable(rows) {
       return `<table><thead><tr><th>Assignment</th><th>Status</th><th>Created</th><th>Terminal</th></tr></thead><tbody>
@@ -539,6 +588,7 @@ APP_HTML = r"""<!doctype html>
         const path = location.hash.slice(1) || "/";
         if (path === "/") renderDashboard();
         else if (path === "/kanban") renderKanban();
+        else if (path === "/schedules") await renderSchedules();
         else if (path === "/config") await renderConfig();
         else if (path === "/graph") await renderGraph();
         else if (path.startsWith("/teams/")) await renderTeam(decodeURIComponent(path.slice(7)));
@@ -559,6 +609,7 @@ APP_HTML = r"""<!doctype html>
       const path = location.hash.slice(1) || "/";
       if (path === "/") renderDashboard();
       else if (path === "/kanban") renderKanban();
+      else if (path === "/schedules") await renderSchedules();
       else if (path === "/graph") await renderGraph();
       else if (path.startsWith("/hubs/")) renderHub(decodeURIComponent(path.slice(6)));
     }, 10000);
@@ -666,6 +717,9 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/config":
                 self._json(hub_config(self.config.factory))
+                return
+            if path == "/api/schedules":
+                self._json(schedules())
                 return
             if path.startswith("/api/teams/"):
                 team_name = unquote(path.removeprefix("/api/teams/"))

@@ -8,7 +8,7 @@ from harness import db
 from harness.tools import dispatch_team, spawn_team
 from harness.viewer import auth
 from harness.viewer.server import APP_HTML
-from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, team_detail
+from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, schedules, team_detail
 
 
 def test_viewer_session_cookie_round_trip() -> None:
@@ -25,13 +25,18 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "Waiting on User" in APP_HTML
     assert "userRequestTable" in APP_HTML
     assert "Kanban" in APP_HTML
+    assert "Schedules" in APP_HTML
     assert "renderKanban" in APP_HTML
+    assert "renderSchedules" in APP_HTML
     assert "Execution Tickets" in APP_HTML
     assert "executionTicketTable" in APP_HTML
     assert "kanbanTicketCard" in APP_HTML
+    assert "kanban--tickets" in APP_HTML
+    assert "kanban-row" in APP_HTML
     assert "renderTabs" in APP_HTML
     assert 'class="tabs"' in APP_HTML
     assert 'path === "/kanban"' in APP_HTML
+    assert 'path === "/schedules"' in APP_HTML
     assert 'path === "/graph"' in APP_HTML
     assert "renderOrgGraphSvg({maxAssignmentsPerTeam: 2" in APP_HTML
 
@@ -157,7 +162,7 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
 def test_hub_config_falls_back_to_repo_templates_for_empty_factory(tmp_path: Path) -> None:
     config = hub_config(tmp_path / "factory")
     assert config["using_fallback"] is True
-    assert any(file["name"] == "docs/team/03_top_tier_souls.md" for file in config["fallback"])
+    assert any(file["name"] == "docs/boss-team-contract.md" for file in config["fallback"])
 
 
 def test_hub_config_prefers_live_factory_files(tmp_path: Path) -> None:
@@ -168,3 +173,55 @@ def test_hub_config_prefers_live_factory_files(tmp_path: Path) -> None:
     assert config["using_fallback"] is False
     assert config["live"][0]["name"] == "README.md"
     assert "Live Hub" in config["live"][0]["body"]
+
+
+def test_schedules_reads_profile_cron_jobs(tmp_path: Path) -> None:
+    jobs_path = tmp_path / "profiles" / "boss" / "cron" / "jobs.json"
+    jobs_path.parent.mkdir(parents=True)
+    jobs_path.write_text(
+        """
+        {
+          "updated_at": "2026-05-05T23:37:00+00:00",
+          "jobs": [
+            {
+              "id": "job-1",
+              "name": "execution-board-tick",
+              "script": "execution_board_tick.py",
+              "no_agent": true,
+              "schedule": {"display": "every 10m"},
+              "schedule_display": "every 10m",
+              "repeat": {"times": null, "completed": 3},
+              "enabled": true,
+              "state": "scheduled",
+              "next_run_at": "2026-05-05T23:47:00+00:00",
+              "last_run_at": "2026-05-05T23:37:00+00:00",
+              "last_status": "ok",
+              "deliver": "local",
+              "workdir": "/opt/hermes-harness"
+            },
+            {
+              "id": "job-2",
+              "name": "paused-job",
+              "schedule_display": "every 1h",
+              "repeat": {"times": 5, "completed": 1},
+              "enabled": false,
+              "state": "paused",
+              "paused_reason": "manual"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    data = schedules(tmp_path)
+
+    assert data["counts"] == {"jobs": 2, "active": 1, "paused": 1, "last_failed": 0}
+    assert data["stores"] == [{"profile": "boss", "path": str(jobs_path)}]
+    assert data["updated_at"]["boss"] == "2026-05-05T23:37:00+00:00"
+    active = data["jobs"][0]
+    assert active["profile"] == "boss"
+    assert active["job_id"] == "job-1"
+    assert active["schedule"] == "every 10m"
+    assert active["script"] == "execution_board_tick.py"
+    assert active["no_agent"] is True
