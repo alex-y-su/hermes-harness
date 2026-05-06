@@ -9,6 +9,7 @@ from harness import db
 
 
 TERMINAL_STATUSES = {"completed", "failed", "canceled", "archived"}
+TERMINAL_SANDBOX_STATUSES = {"completed", "failed", "canceled", "archived", "paused_archived"}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILENAMES = {
     "AGENTS.md",
@@ -89,6 +90,70 @@ def _decode_ticket(row: Any) -> dict[str, Any]:
     data["blockers"] = json.loads(data.pop("blockers_json") or "[]")
     data["metadata"] = json.loads(data.get("metadata") or "{}")
     return data
+
+
+def _decode_handle(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return {"handle": str(raw), "metadata": {}}
+    if isinstance(data, dict):
+        return data
+    return {"handle": str(raw), "metadata": {}}
+
+
+def _is_real_e2b_handle(raw: Any) -> bool:
+    data = _decode_handle(raw)
+    handle = str(data.get("handle") or "")
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    if metadata.get("dry_run"):
+        return False
+    if handle.startswith(("dry-run-e2b://", "e2b-team://")):
+        return False
+    return bool(handle)
+
+
+def _e2b_machine_summary(conn: Any) -> dict[str, Any]:
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT assignment_id, team_name, status, handle, created_at, booted_at,
+                   last_heartbeat_at, blocked_since, archived_at
+            FROM assignment_sandboxes
+            WHERE substrate = 'e2b'
+            ORDER BY created_at DESC, assignment_id DESC
+            """
+        )
+    ]
+    active_rows = [
+        row
+        for row in rows
+        if not row.get("archived_at")
+        and str(row.get("status") or "") not in TERMINAL_SANDBOX_STATUSES
+        and _is_real_e2b_handle(row.get("handle"))
+    ]
+    return {
+        "active": len(active_rows),
+        "blocked": sum(1 for row in active_rows if row.get("status") == "blocked"),
+        "teams": sorted({row["team_name"] for row in active_rows if row.get("team_name")}),
+        "assignments": [
+            {
+                "assignment_id": row.get("assignment_id"),
+                "team_name": row.get("team_name"),
+                "status": row.get("status"),
+                "booted_at": row.get("booted_at"),
+                "last_heartbeat_at": row.get("last_heartbeat_at"),
+                "blocked_since": row.get("blocked_since"),
+            }
+            for row in active_rows
+        ],
+        "tracked": len([row for row in rows if _is_real_e2b_handle(row.get("handle"))]),
+    }
 
 
 def _safe_schedule_error(value: Any) -> str | None:
@@ -317,6 +382,7 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
                 """
             )
         ]
+        e2b_machines = _e2b_machine_summary(conn)
     hubs = sorted({team["hub"] for team in teams if team.get("hub")})
     active = sum(int(team.get("active_assignments") or 0) for team in teams)
     waiting = sum(1 for request in user_requests if request["status"] == "open")
@@ -329,9 +395,11 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
         "factory": str(factory),
         "teams": teams,
         "hubs": hubs,
+        "e2b_machines": e2b_machines,
         "counts": {
             "teams": len(teams),
             "hubs": len(hubs),
+            "active_e2b_machines": e2b_machines["active"],
             "active_assignments": active,
             "active_execution_tickets": active_tickets,
             "blocked_execution_tickets": blocked_tickets,

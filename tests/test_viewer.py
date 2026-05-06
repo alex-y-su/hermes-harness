@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 
 from harness import db
+from harness.models import SubstrateHandle
 from harness.tools import dispatch_team, spawn_team
 from harness.viewer import auth
 from harness.viewer.server import APP_HTML
@@ -38,6 +39,8 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "renderKanban" in APP_HTML
     assert "renderSchedules" in APP_HTML
     assert "Execution Tickets" in APP_HTML
+    assert "Live E2B machines" in APP_HTML
+    assert "metric--live-e2b" in APP_HTML
     assert "executionTicketTable" in APP_HTML
     assert "kanbanTicketCard" in APP_HTML
     assert "renderTicket" in APP_HTML
@@ -168,9 +171,52 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
             title="Assignment stale",
             body="No heartbeat.",
         )
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="asn-real-e2b",
+            team_name="research",
+            handle=SubstrateHandle(
+                team_name="research",
+                substrate="e2b",
+                handle="sandbox-real-1",
+                metadata={"workspace_path": str(factory / "teams" / "research")},
+            ),
+            agent_card_url="https://sandbox-real-1.example/.well-known/agent-card.json",
+            status="booted",
+        )
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="asn-dry-e2b",
+            team_name="research",
+            handle=SubstrateHandle(
+                team_name="research",
+                substrate="e2b",
+                handle="dry-run-e2b://research",
+                metadata={"dry_run": True},
+            ),
+            agent_card_url="http://localhost/.well-known/agent-card.json",
+            status="booted",
+            metadata={"dry_run": True},
+        )
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="asn-placeholder-e2b",
+            team_name="research",
+            handle=SubstrateHandle(
+                team_name="research",
+                substrate="e2b",
+                handle="e2b-team://research",
+                metadata={"per_assignment": True},
+            ),
+            agent_card_url=None,
+            status="booted",
+        )
 
     digest = dashboard(factory, db_path)
     assert digest["counts"]["teams"] == 1
+    assert digest["counts"]["active_e2b_machines"] == 1
+    assert digest["e2b_machines"]["active"] == 1
+    assert digest["e2b_machines"]["teams"] == ["research"]
     assert digest["counts"]["active_assignments"] == 1
     assert digest["counts"]["waiting_on_user"] == 2
     assert digest["counts"]["open_alerts"] == 1

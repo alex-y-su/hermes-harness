@@ -54,6 +54,11 @@ APP_HTML = r"""<!doctype html>
     .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
     .card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 14px; min-width: 0; }
     .metric { font-size: 28px; font-weight: 700; }
+    .metric--live-e2b { color: var(--accent); animation: pulse-live-e2b 1.8s ease-in-out infinite; }
+    @keyframes pulse-live-e2b {
+      0%, 100% { opacity: 0.82; text-shadow: 0 0 0 rgba(103, 212, 180, 0); }
+      50% { opacity: 1; text-shadow: 0 0 14px rgba(103, 212, 180, 0.48); }
+    }
     .muted { color: var(--muted); }
     .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; }
     .state-failed, .state-error { color: var(--bad); }
@@ -162,7 +167,7 @@ APP_HTML = r"""<!doctype html>
         <p class="muted">${esc(d.factory)}</p>
         <section class="grid">
           <div class="card"><div class="metric">${d.counts.teams}</div><div class="muted">Teams</div></div>
-          <div class="card"><div class="metric">${d.counts.hubs}</div><div class="muted">Hubs</div></div>
+          <div class="card"><div class="metric metric--live-e2b">${d.counts.active_e2b_machines || 0}</div><div class="muted">Live E2B machines</div></div>
           <div class="card"><div class="metric">${d.counts.active_assignments}</div><div class="muted">Active assignments</div></div>
           <div class="card"><div class="metric">${d.counts.active_execution_tickets || 0}</div><div class="muted">Active tickets</div></div>
           <div class="card"><div class="metric">${d.counts.blocked_execution_tickets || 0}</div><div class="muted">Blocked tickets</div></div>
