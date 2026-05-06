@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -59,7 +60,7 @@ def dispatch_assignment(
         if factory_dir is None or db_path is None:
             raise ValueError("factory_dir and db_path are required for per-assignment E2B dispatch")
         max_machines = int(os.getenv("HARNESS_MAX_E2B_ASSIGNMENT_MACHINES", "0") or "0")
-        if max_machines > 0 and _active_assignment_sandbox_count(Path(db_path)) >= max_machines:
+        if max_machines > 0 and _active_assignment_sandbox_count(Path(db_path), secrets.resolve("env://E2B_API_KEY")) >= max_machines:
             db.release_lease(resource_type="assignment", resource_id=assignment_id, holder=holder)
             return {"skipped": True, "status": "capacity-limited", "max_e2b_assignment_machines": max_machines}
         try:
@@ -195,23 +196,47 @@ def _needs_assignment_sandbox(transport: dict[str, Any]) -> bool:
     return bool(transport.get("per_assignment")) or not bool(str(transport.get("agent_card_url") or "").strip())
 
 
-def _active_assignment_sandbox_count(db_path: Path) -> int:
+def _active_assignment_sandbox_count(db_path: Path, api_key: str | None = None) -> int:
     conn = sqlite3.connect(db_path)
     try:
-        row = conn.execute(
+        rows = conn.execute(
             """
-            SELECT COUNT(*) AS count
+            SELECT handle
             FROM assignment_sandboxes s
-            JOIN team_assignments a ON a.assignment_id = s.assignment_id
             WHERE s.substrate = 'e2b'
               AND s.archived_at IS NULL
               AND s.status NOT IN ('completed', 'failed', 'canceled', 'archived', 'paused_archived')
-              AND a.status NOT IN ('completed', 'failed', 'canceled', 'archived', 'stale')
             """
-        ).fetchone()
-        return int(row[0] if row else 0)
+        ).fetchall()
     finally:
         conn.close()
+    tracked_handles = {_sandbox_id(row[0]) for row in rows}
+    tracked_handles.discard("")
+    if not api_key:
+        return len(tracked_handles)
+    try:
+        from e2b import Sandbox, SandboxQuery, SandboxState  # type: ignore
+
+        paginator = Sandbox.list(query=SandboxQuery(state=[SandboxState.RUNNING]), limit=100, api_key=api_key)
+        running: set[str] = set()
+        while paginator.has_next:
+            for item in paginator.next_items():
+                sandbox_id = getattr(item, "sandbox_id", None)
+                if sandbox_id:
+                    running.add(str(sandbox_id))
+        return len(tracked_handles & running)
+    except Exception:
+        return len(tracked_handles)
+
+
+def _sandbox_id(raw: Any) -> str:
+    try:
+        data = json.loads(str(raw))
+    except Exception:
+        return ""
+    if isinstance(data, dict):
+        return str(data.get("handle") or "")
+    return ""
 
 
 def _run_async_assignment_sandbox(
