@@ -18,6 +18,7 @@ from harness.viewer.data import (
     execution_ticket_detail,
     graph,
     hub_config,
+    resource_detail,
     schedules,
     team_detail,
     user_request_detail,
@@ -39,8 +40,10 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "userRequestTable" in APP_HTML
     assert "Kanban" in APP_HTML
     assert "Schedules" in APP_HTML
+    assert "Resources" in APP_HTML
     assert "renderKanban" in APP_HTML
     assert "renderSchedules" in APP_HTML
+    assert "renderResources" in APP_HTML
     assert "Execution Tickets" in APP_HTML
     assert "Live E2B machines" in APP_HTML
     assert "metric--live-e2b" in APP_HTML
@@ -56,6 +59,7 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "compactGraphText" in APP_HTML
     assert 'class="tabs"' in APP_HTML
     assert 'path === "/kanban"' in APP_HTML
+    assert 'path === "/resources"' in APP_HTML
     assert 'path === "/schedules"' in APP_HTML
     assert 'path === "/graph"' in APP_HTML
     assert "renderOrgGraphSvg({maxAssignmentsPerTeam: 2" in APP_HTML
@@ -66,6 +70,21 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> No
     monkeypatch.delenv("E2B_ACCESS_TOKEN", raising=False)
     _E2B_PROVIDER_CACHE.update({"expires_at": 0.0, "summary": None})
     factory = tmp_path / "factory"
+    resource_path = factory / "resources" / "website" / "main.json"
+    resource_path.parent.mkdir(parents=True)
+    resource_path.write_text(
+        """
+        {
+          "id": "website/main",
+          "title": "Main website",
+          "kind": "website",
+          "state": "ready",
+          "owner": "dev",
+          "approval_policy": "production mutations require explicit approval"
+        }
+        """,
+        encoding="utf-8",
+    )
     asyncio.run(
         spawn_team.run(
             spawn_team.build_parser().parse_args(
@@ -126,6 +145,16 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> No
             approval_request_id="tkt-approval-view:approval-required",
             acceptance=["approval is recorded"],
             verification=["request card opens"],
+            metadata={
+                "resources": ["website/main"],
+                "approval": {
+                    "requested_action": "publish prepared copy",
+                    "target_resource": "website/main",
+                    "why": "validate website conversion copy",
+                    "blast_radius": "public website content",
+                    "rollback": "restore previous copy",
+                },
+            },
         )
         db.upsert_approval_request(
             conn,
@@ -138,7 +167,7 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> No
             prompt="Approve publishing this prepared artifact.",
             required_fields=[{"name": "approved"}],
             escalation_path=str(factory / "escalations" / "tkt-approval-view.md"),
-            metadata={"ticket_id": "tkt-approval-view"},
+            metadata={"ticket_id": "tkt-approval-view", "resources": ["website/main"]},
         )
         db.upsert_approval_request(
             conn,
@@ -221,6 +250,7 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> No
     digest = dashboard(factory, db_path)
     assert digest["counts"]["teams"] == 1
     assert digest["counts"]["active_e2b_machines"] == 1
+    assert digest["counts"]["resources"] == 1
     assert digest["e2b_machines"]["active"] == 1
     assert digest["e2b_machines"]["teams"] == ["research"]
     assert digest["counts"]["active_assignments"] == 1
@@ -250,11 +280,18 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> No
     assert ticket is not None
     assert ticket["assignment"] is None
     assert ticket["user_requests"][0]["request_id"] == "tkt-approval-view:approval-required"
+    assert ticket["resources"][0]["id"] == "website/main"
 
     request = user_request_detail(factory, db_path, "tkt-approval-view:approval-required")
     assert request is not None
     assert request["assignment"] is None
     assert request["ticket"]["ticket_id"] == "tkt-approval-view"
+    assert request["resources"][0]["id"] == "website/main"
+    assert request["decision"]["requested_action"] == "publish prepared copy"
+
+    resource = resource_detail(factory, "website/main")
+    assert resource is not None
+    assert resource["title"] == "Main website"
 
     graph_data = graph(factory, db_path)
     node_ids = {node["id"] for node in graph_data["nodes"]}

@@ -228,6 +228,28 @@ morning_digest_at: "07:30"
     "CALENDAR.md": "# CALENDAR.md\n\nPending generation by brand remote team.\n",
     "DIRECTIVES.md": "# DIRECTIVES.md\n\nLegacy file. Boss orders go in orders/.\n",
     "PERFORMANCE.md": "# PERFORMANCE.md\n\nPending generation by growth remote team.\n",
+    "RESOURCE_REGISTRY.md": """# RESOURCE_REGISTRY.md
+
+Resources are tracked as files under `factory/resources/`.
+
+Every ticket that touches an external account, website, repository, database, app config, paid channel, credentialed API, production environment, or user-visible surface must reference resource IDs in ticket metadata.
+
+Resource files may be JSON or Markdown with frontmatter. Minimal fields:
+
+```json
+{
+  "id": "website/main",
+  "title": "Main website",
+  "kind": "website",
+  "state": "ready",
+  "owner": "dev",
+  "approval_policy": "production mutations require explicit approval",
+  "access": "repo and deployment credentials required"
+}
+```
+
+Allowed states: `ready`, `missing`, `needs-access`, `needs-setup`, `blocked`, `deprecated`.
+""",
 }
 
 GENERIC_PROTOCOL = f"""# PROTOCOL.md
@@ -245,7 +267,9 @@ GENERIC_PROTOCOL = f"""# PROTOCOL.md
 ## Approval Flow
 - In-envelope internal planning, research synthesis, local draft creation, and local code review can proceed without user interruption.
 - External outreach, public publication, paid spend, production mutation, credential use, irreversible data changes, or legal/compliance-sensitive actions require standing approval or explicit user approval.
-- Approval requests should be concrete: requested action, reason, blast radius, expiry, and fallback if denied.
+- Before requesting approval, verify required resources in `factory/resources/` exist and are in a usable state. If a resource is missing or needs access/setup, create a resource setup/access ticket first.
+- Approval requests should be concrete decision packets: requested action, target resources, reason, artifact/diff/content, expected impact, blast radius, cost, preconditions checked, expiry, rollback/fallback, and what happens if denied.
+- Ticket metadata should include `resources` or `resource_dependencies` with resource IDs.
 """
 
 GENERIC_HARD_RULES = """# HARD_RULES.md
@@ -257,6 +281,7 @@ GENERIC_HARD_RULES = """# HARD_RULES.md
 - Never hide blockers. Create or update blocker tickets with the exact missing input or approval.
 - Never let one blocked ticket stop unrelated active work.
 - Never create broad write scopes when a small scoped task is enough.
+- Never request approval for a production/public/paid/credentialed action until the target resource exists in `factory/resources/` and the approval explains exactly what will happen and why.
 - Preserve unrelated user changes in any workspace.
 
 ## Remote Execution
@@ -672,6 +697,7 @@ def _write_factory_contract(factory_dir: Path, *, overwrite: bool) -> None:
         _write_text(factory_dir / rel, content, overwrite)
     for rel, content in FACTORY_TEXT_FILES.items():
         _write_text(factory_dir / rel, content, overwrite)
+    (factory_dir / "resources").mkdir(parents=True, exist_ok=True)
     for dirname in ("messages", "publications", "experiments", "product_specs", "patches", "spend_requests"):
         (factory_dir / "drafts" / dirname).mkdir(parents=True, exist_ok=True)
         (factory_dir / "approvals" / dirname).mkdir(parents=True, exist_ok=True)

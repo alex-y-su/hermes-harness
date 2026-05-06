@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from harness import db
+from harness.resources import get_resource, list_resources, resource_refs_from_metadata, resources_by_id
 
 
 TERMINAL_STATUSES = {"completed", "failed", "canceled", "archived"}
@@ -374,6 +375,7 @@ def list_teams(factory: Path, db_path: Path) -> list[dict[str, Any]]:
 
 def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
     teams = list_teams(factory, db_path)
+    resources = list_resources(factory)
     with db.session(db_path) as conn:
         recent_events = [
             dict(row)
@@ -449,10 +451,15 @@ def dashboard(factory: Path, db_path: Path) -> dict[str, Any]:
         "factory": str(factory),
         "teams": teams,
         "hubs": hubs,
+        "resources": resources,
         "e2b_machines": e2b_machines,
         "counts": {
             "teams": len(teams),
             "hubs": len(hubs),
+            "resources": len(resources),
+            "resources_needing_access": sum(
+                1 for resource in resources if str(resource.get("state") or "") in {"missing", "needs-access", "needs-setup", "blocked"}
+            ),
             "active_e2b_machines": e2b_machines["active"],
             "active_assignments": active,
             "active_execution_tickets": active_tickets,
@@ -652,6 +659,7 @@ def assignment_detail(factory: Path, db_path: Path, assignment_id: str) -> dict[
 
 
 def execution_ticket_detail(factory: Path, db_path: Path, ticket_id: str) -> dict[str, Any] | None:
+    resource_index = resources_by_id(factory)
     with db.session(db_path) as conn:
         row = conn.execute("SELECT * FROM execution_tickets WHERE ticket_id = ?", (ticket_id,)).fetchone()
         if not row:
@@ -695,10 +703,12 @@ def execution_ticket_detail(factory: Path, db_path: Path, ticket_id: str) -> dic
         "assignment": assignment,
         "user_requests": user_requests,
         "child_tickets": child_tickets,
+        "resources": _linked_resources(resource_index, resource_refs_from_metadata(ticket.get("metadata"))),
     }
 
 
 def user_request_detail(factory: Path, db_path: Path, request_id: str) -> dict[str, Any] | None:
+    resource_index = resources_by_id(factory)
     with db.session(db_path) as conn:
         row = conn.execute("SELECT * FROM approval_requests WHERE request_id = ?", (request_id,)).fetchone()
         if not row:
@@ -725,8 +735,57 @@ def user_request_detail(factory: Path, db_path: Path, request_id: str) -> dict[s
         **request,
         "assignment": dict(assignment_row) if assignment_row else None,
         "ticket": _decode_ticket(ticket_row) if ticket_row else None,
+        "decision": _decision_packet(request, _decode_ticket(ticket_row) if ticket_row else None),
+        "resources": _linked_resources(
+            resource_index,
+            [
+                *resource_refs_from_metadata(request.get("metadata")),
+                *resource_refs_from_metadata(_decode_ticket(ticket_row).get("metadata") if ticket_row else {}),
+            ],
+        ),
         "escalation_body": _read_text(Path(escalation_path)) if escalation_path else "",
         "relative_escalation_path": _rel(factory, escalation_path),
+    }
+
+
+def resource_detail(factory: Path, resource_id: str) -> dict[str, Any] | None:
+    return get_resource(factory, resource_id)
+
+
+def _linked_resources(resource_index: dict[str, dict[str, Any]], refs: list[str]) -> list[dict[str, Any]]:
+    linked = []
+    seen = set()
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        linked.append(resource_index.get(ref) or {"id": ref, "title": ref, "state": "unknown", "missing": True})
+    return linked
+
+
+def _decision_packet(request: dict[str, Any], ticket: dict[str, Any] | None) -> dict[str, Any]:
+    metadata = request.get("metadata") if isinstance(request.get("metadata"), dict) else {}
+    ticket_metadata = ticket.get("metadata") if ticket and isinstance(ticket.get("metadata"), dict) else {}
+    details = (
+        metadata.get("approval")
+        or metadata.get("approval_details")
+        or metadata.get("decision")
+        or ticket_metadata.get("approval")
+        or ticket_metadata.get("approval_details")
+        or {}
+    )
+    if not isinstance(details, dict):
+        details = {}
+    return {
+        "requested_action": details.get("requested_action") or details.get("action") or request.get("title"),
+        "why": details.get("why") or details.get("reason") or details.get("business_reason"),
+        "target": details.get("target") or details.get("target_resource") or details.get("resource"),
+        "artifact": details.get("artifact") or details.get("artifact_path") or details.get("diff") or details.get("content_path"),
+        "expected_impact": details.get("expected_impact") or details.get("impact"),
+        "blast_radius": details.get("blast_radius"),
+        "cost": details.get("cost") or details.get("spend"),
+        "rollback": details.get("rollback") or details.get("fallback") or details.get("fallback_plan"),
+        "preconditions": details.get("preconditions") or details.get("checks") or details.get("prerequisites") or [],
     }
 
 

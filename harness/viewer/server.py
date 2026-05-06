@@ -21,6 +21,7 @@ from harness.viewer.data import (
     execution_ticket_detail,
     graph,
     hub_config,
+    resource_detail,
     schedules,
     team_detail,
     user_request_detail,
@@ -47,10 +48,14 @@ APP_HTML = r"""<!doctype html>
     h3 { font-size: 14px; color: var(--muted); margin: 14px 0 8px; text-transform: uppercase; }
     .brand { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
     .nav { display: grid; gap: 6px; }
-    .nav a, button, input { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; }
+    .nav a, button, input, textarea { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; }
     .nav a { padding: 9px 10px; }
     .nav a.active { border-color: var(--accent); color: var(--accent); }
     input { width: 100%; padding: 9px 10px; margin: 10px 0; }
+    textarea { width: 100%; min-height: 90px; padding: 9px 10px; resize: vertical; }
+    button { cursor: pointer; padding: 8px 10px; }
+    button:hover { border-color: var(--accent); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
     .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
     .card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 14px; min-width: 0; }
     .metric { font-size: 28px; font-weight: 700; }
@@ -131,6 +136,7 @@ APP_HTML = r"""<!doctype html>
       if (kind === "assignment") return `#/assignments/${encodeURIComponent(id)}`;
       if (kind === "ticket") return `#/tickets/${encodeURIComponent(id)}`;
       if (kind === "request") return `#/requests/${encodeURIComponent(id)}`;
+      if (kind === "resource") return `#/resources/${encodeURIComponent(id)}`;
       if (kind === "hub") return `#/hubs/${encodeURIComponent(id)}`;
       return "#/";
     }
@@ -140,6 +146,7 @@ APP_HTML = r"""<!doctype html>
       nav.innerHTML = `
         <a href="#/" data-route="/">Dashboard</a>
         <a href="#/kanban" data-route="/kanban">Kanban</a>
+        <a href="#/resources" data-route="/resources">Resources</a>
         <a href="#/schedules" data-route="/schedules">Schedules</a>
         <a href="#/config" data-route="/config">Hub Config</a>
         <a href="#/graph" data-route="/graph">Graph</a>
@@ -153,6 +160,7 @@ APP_HTML = r"""<!doctype html>
       const tabs = [
         {id: "dashboard", label: "Dashboard", href: "#/"},
         {id: "kanban", label: "Kanban", href: "#/kanban"},
+        {id: "resources", label: "Resources", href: "#/resources"},
         {id: "schedules", label: "Schedules", href: "#/schedules"},
         {id: "graph", label: "Graph", href: "#/graph"},
         {id: "config", label: "Hub Config", href: "#/config"}
@@ -168,6 +176,7 @@ APP_HTML = r"""<!doctype html>
         <section class="grid">
           <div class="card"><div class="metric">${d.counts.teams}</div><div class="muted">Teams</div></div>
           <div class="card"><div class="metric metric--live-e2b">${d.counts.active_e2b_machines || 0}</div><div class="muted">Live E2B machines</div></div>
+          <div class="card"><div class="metric">${d.counts.resources || 0}</div><div class="muted">Resources</div></div>
           <div class="card"><div class="metric">${d.counts.active_assignments}</div><div class="muted">Active assignments</div></div>
           <div class="card"><div class="metric">${d.counts.active_execution_tickets || 0}</div><div class="muted">Active tickets</div></div>
           <div class="card"><div class="metric">${d.counts.blocked_execution_tickets || 0}</div><div class="muted">Blocked tickets</div></div>
@@ -175,6 +184,7 @@ APP_HTML = r"""<!doctype html>
           <div class="card"><div class="metric">${d.counts.retrying_assignments}</div><div class="muted">Retrying</div></div>
           <div class="card"><div class="metric">${d.counts.stale_assignments}</div><div class="muted">Stale</div></div>
           <div class="card"><div class="metric">${d.counts.open_alerts}</div><div class="muted">Open alerts</div></div>
+          <div class="card"><div class="metric">${d.counts.resources_needing_access || 0}</div><div class="muted">Resources blocked</div></div>
         </section>
         <div class="section-head">
           <h2>Org Graph</h2>
@@ -223,6 +233,18 @@ APP_HTML = r"""<!doctype html>
           <td>${t.assignment_id ? esc(t.assignment_id) : ""}</td>
           <td>${esc(t.title)}</td>
           <td class="muted">${esc(t.updated_at || t.created_at || "")}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+    }
+    function resourceLinks(resources) {
+      if (!resources || !resources.length) return '<p class="muted">No linked resources.</p>';
+      return `<table><thead><tr><th>Resource</th><th>Kind</th><th>State</th><th>Owner</th><th>Policy</th></tr></thead><tbody>
+        ${resources.map(r => `<tr>
+          <td><a href="${linkFor("resource", r.id)}">${esc(r.title || r.id)}</a><div class="muted">${esc(r.id || "")}</div></td>
+          <td>${esc(r.kind || "")}</td>
+          <td class="${statusClass(r.state)}">${esc(r.state || "")}${r.missing ? '<div class="state-open">not registered</div>' : ""}</td>
+          <td>${esc(r.owner || r.team || "")}</td>
+          <td>${esc(r.approval_policy || r.policy || "")}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
@@ -356,6 +378,39 @@ APP_HTML = r"""<!doctype html>
           ${kanbanColumn("Stopped", stopped, kanbanAssignmentCard)}
         </section>`;
     }
+    function renderResources() {
+      const resources = state.dashboard.resources || [];
+      const blockedStates = new Set(["missing", "needs-access", "needs-setup", "blocked"]);
+      app.innerHTML = `
+        <div class="section-head">
+          <h1>Resources</h1>
+          <span class="pill">file-backed</span>
+        </div>
+        ${renderTabs("resources")}
+        <p class="muted">${esc(state.dashboard.factory)}/resources</p>
+        <section class="grid">
+          <div class="card"><div class="metric">${resources.length}</div><div class="muted">Registered</div></div>
+          <div class="card"><div class="metric">${resources.filter(r => blockedStates.has(String(r.state))).length}</div><div class="muted">Needs setup/access</div></div>
+        </section>
+        <h2>Registry</h2>
+        ${resourceLinks(resources)}
+      `;
+    }
+    async function renderResource(id) {
+      const r = await api(`/api/resources/${encodeURIComponent(id)}`);
+      app.innerHTML = `<h1>${esc(r.title || r.id)}</h1>
+        ${renderTabs("resources")}
+        <p><span class="pill ${statusClass(r.state)}">${esc(r.state || "unknown")}</span> <span class="pill">${esc(r.kind || "resource")}</span> ${r.owner ? `<span class="pill">owner: ${esc(r.owner)}</span>` : ""}</p>
+        <p class="muted">${esc(r.id)} · ${esc(r.relative_path || "")}</p>
+        <h2>Policy</h2><pre>${esc(JSON.stringify({
+          approval_policy: r.approval_policy || r.policy || null,
+          access: r.access || null,
+          cost: r.cost || null,
+          external_connection: r.external_connection || null
+        }, null, 2))}</pre>
+        <h2>Description</h2><pre>${esc(r.body || r.description || "No resource notes.")}</pre>
+        <h2>Metadata</h2><pre>${esc(JSON.stringify(r, null, 2))}</pre>`;
+    }
     async function renderTeam(name) {
       const t = await api(`/api/teams/${encodeURIComponent(name)}`);
       app.innerHTML = `
@@ -462,9 +517,38 @@ APP_HTML = r"""<!doctype html>
         <h2>Acceptance</h2><pre>${esc(JSON.stringify(t.acceptance || [], null, 2))}</pre>
         <h2>Verification</h2><pre>${esc(JSON.stringify(t.verification || [], null, 2))}</pre>
         <h2>Blockers</h2><pre>${esc(JSON.stringify(t.blockers || [], null, 2))}</pre>
+        <h2>Resources</h2>${resourceLinks(t.resources || [])}
         <h2>Waiting on User</h2>${userRequestTable(t.user_requests || [])}
         <h2>Child Tickets</h2>${executionTicketTable(t.child_tickets || [])}
         <h2>Metadata</h2><pre>${esc(JSON.stringify(t.metadata || {}, null, 2))}</pre>`;
+    }
+    function decisionTable(packet) {
+      const fields = [
+        ["Requested action", packet?.requested_action],
+        ["Why", packet?.why],
+        ["Target", packet?.target],
+        ["Artifact", packet?.artifact],
+        ["Expected impact", packet?.expected_impact],
+        ["Blast radius", packet?.blast_radius],
+        ["Cost", packet?.cost],
+        ["Rollback / fallback", packet?.rollback],
+      ];
+      return `<table><tbody>
+        ${fields.map(([label, value]) => `<tr><th>${esc(label)}</th><td>${esc(value || "Not specified")}</td></tr>`).join("")}
+        <tr><th>Preconditions</th><td><pre>${esc(JSON.stringify(packet?.preconditions || [], null, 2))}</pre></td></tr>
+      </tbody></table>`;
+    }
+    async function resolveRequest(id, action) {
+      const comment = document.getElementById("approval-comment")?.value || "";
+      const res = await fetch(`/api/requests/${encodeURIComponent(id)}/resolve`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action, comment})
+      });
+      if (res.status === 401) location.href = "/login";
+      if (!res.ok) throw new Error(await res.text());
+      state.dashboard = null;
+      await renderRequest(id);
     }
     async function renderRequest(id) {
       const r = await api(`/api/requests/${encodeURIComponent(id)}`);
@@ -473,6 +557,15 @@ APP_HTML = r"""<!doctype html>
         <p class="muted">${esc(r.request_id)} · ${esc(r.created_at || "")}</p>
         ${r.ticket ? `<p>Ticket: <a href="${linkFor("ticket", r.ticket.ticket_id)}">${esc(r.ticket.ticket_id)}</a></p>` : ""}
         ${r.assignment ? `<p>Assignment: <a href="${linkFor("assignment", r.assignment.assignment_id)}">${esc(r.assignment.assignment_id)}</a></p>` : r.assignment_id ? `<p class="muted">Assignment reference: ${esc(r.assignment_id)}</p>` : ""}
+        <h2>Decision Summary</h2>${decisionTable(r.decision || {})}
+        <h2>Resources</h2>${resourceLinks(r.resources || [])}
+        ${String(r.status) === "open" ? `<h2>Respond</h2>
+          <textarea id="approval-comment" placeholder="Optional comment or requested change"></textarea>
+          <div class="actions">
+            <button type="button" onclick="resolveRequest('${esc(r.request_id)}', 'approve')">Approve</button>
+            <button type="button" onclick="resolveRequest('${esc(r.request_id)}', 'request_changes')">Request changes</button>
+            <button type="button" onclick="resolveRequest('${esc(r.request_id)}', 'reject')">Reject</button>
+          </div>` : ""}
         <h2>Prompt</h2><pre>${esc(r.prompt || "No prompt.")}</pre>
         <h2>Required Fields</h2><pre>${esc(JSON.stringify(r.required_fields || [], null, 2))}</pre>
         <h2>Response</h2><pre>${esc(JSON.stringify(r.response || null, null, 2))}</pre>
@@ -641,6 +734,8 @@ APP_HTML = r"""<!doctype html>
         const path = location.hash.slice(1) || "/";
         if (path === "/") renderDashboard();
         else if (path === "/kanban") renderKanban();
+        else if (path === "/resources") renderResources();
+        else if (path.startsWith("/resources/")) await renderResource(decodeURIComponent(path.slice(11)));
         else if (path === "/schedules") await renderSchedules();
         else if (path === "/config") await renderConfig();
         else if (path === "/graph") await renderGraph();
@@ -747,6 +842,12 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            if not self._authenticated():
+                self._json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            self._api_post(parsed.path)
+            return
         if parsed.path != "/login":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -808,10 +909,91 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     return
                 self._json(detail)
                 return
+            if path.startswith("/api/resources/"):
+                resource_id = unquote(path.removeprefix("/api/resources/"))
+                detail = resource_detail(self.config.factory, resource_id)
+                if detail is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "unknown resource")
+                    return
+                self._json(detail)
+                return
+        except LookupError as error:
+            self.send_error(HTTPStatus.NOT_FOUND, str(error))
+            return
         except Exception as error:
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _api_post(self, path: str) -> None:
+        try:
+            if path.startswith("/api/requests/") and path.endswith("/resolve"):
+                request_id = unquote(path.removeprefix("/api/requests/").removesuffix("/resolve"))
+                payload = self._json_request_body()
+                result = self._resolve_request(request_id, payload)
+                self._json(result)
+                return
+        except LookupError as error:
+            self.send_error(HTTPStatus.NOT_FOUND, str(error))
+            return
+        except Exception as error:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _json_request_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+        data = json.loads(raw or "{}")
+        if not isinstance(data, dict):
+            raise ValueError("JSON request body must be an object")
+        return data
+
+    def _resolve_request(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "").strip()
+        if action not in {"approve", "reject", "request_changes"}:
+            raise ValueError("action must be approve, reject, or request_changes")
+        comment = str(payload.get("comment") or "").strip()
+        response = {
+            "action": action,
+            "approved": action == "approve",
+            "comment": comment,
+            "source": "viewer",
+        }
+        status = "denied" if action == "reject" else "supplied"
+        with db.session(self.config.db_path) as conn:
+            row = db.resolve_approval_request(
+                conn,
+                request_id=request_id,
+                response=response,
+                status=status,
+                metadata={"resolved_by": "viewer", "viewer_action": action},
+            )
+            if row is None:
+                raise LookupError("unknown request")
+            ticket = conn.execute(
+                """
+                SELECT *
+                FROM execution_tickets
+                WHERE approval_request_id = ?
+                   OR ticket_id = ?
+                   OR assignment_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (request_id, row["assignment_id"], row["assignment_id"]),
+            ).fetchone()
+            if ticket is not None and action == "reject":
+                db.set_execution_ticket_status(conn, ticket_id=ticket["ticket_id"], status="canceled", terminal=True)
+            elif ticket is not None and ticket["status"] == "blocked":
+                next_status = "completed" if ticket["mode"] == "escalate" and action == "approve" else "ready"
+                db.set_execution_ticket_status(
+                    conn,
+                    ticket_id=ticket["ticket_id"],
+                    status=next_status,
+                    terminal=next_status == "completed",
+                )
+        return user_request_detail(self.config.factory, self.config.db_path, request_id) or {}
 
     def _authenticated(self) -> bool:
         cookie = SimpleCookie(self.headers.get("Cookie"))

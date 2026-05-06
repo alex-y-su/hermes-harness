@@ -180,6 +180,12 @@ def _sync_one(conn: Any, row: Any) -> dict[str, Any] | None:
         if request and request["status"] == "open" and status != "blocked":
             updated = db.set_execution_ticket_status(conn, ticket_id=ticket["ticket_id"], status="blocked")
             return {"ticket_id": ticket["ticket_id"], "status": updated["status"], "reason": "approval_open"}
+        if request and request["status"] == "denied":
+            updated = db.set_execution_ticket_status(conn, ticket_id=ticket["ticket_id"], status="canceled", terminal=True)
+            return {"ticket_id": ticket["ticket_id"], "status": updated["status"], "reason": "approval_denied"}
+        if request and request["status"] in {"supplied", "resuming", "resolved"} and ticket["mode"] == "escalate":
+            updated = db.set_execution_ticket_status(conn, ticket_id=ticket["ticket_id"], status="completed", terminal=True)
+            return {"ticket_id": ticket["ticket_id"], "status": updated["status"], "reason": "approval_supplied"}
         if request and request["status"] in {"supplied", "resuming", "resolved"} and status == "blocked":
             updated = db.set_execution_ticket_status(conn, ticket_id=ticket["ticket_id"], status="ready")
             return {"ticket_id": ticket["ticket_id"], "status": updated["status"], "reason": "approval_supplied"}
