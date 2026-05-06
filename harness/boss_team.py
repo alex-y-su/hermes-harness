@@ -244,6 +244,20 @@ Resource files may be JSON or Markdown with frontmatter. Minimal fields:
   "state": "ready",
   "owner": "dev",
   "approval_policy": "production mutations require explicit approval",
+  "execution": {
+    "mode": "hub_skill",
+    "skill": "resource-action-website-edit",
+    "network": "main_machine"
+  },
+  "usage_policy": {
+    "actions": {
+      "change_page_title": {
+        "max_per_30d": 1,
+        "observation_window_days": 21,
+        "requires_approval": true
+      }
+    }
+  },
   "access": "repo and deployment credentials required"
 }
 ```
@@ -251,6 +265,20 @@ Resource files may be JSON or Markdown with frontmatter. Minimal fields:
 Allowed states: `ready`, `missing`, `needs-access`, `needs-setup`, `blocked`, `deprecated`.
 
 The harness watchdog mirrors every `missing`, `needs-access`, `needs-setup`, `blocked`, `declined`, or `denied` resource into an open user request. Do not create duplicate resource requests manually; update the resource file or the existing request.
+
+Ready does not mean unlimited. Resource `usage_policy` defines safe cadence,
+quiet hours, observation windows, and depletion limits. Externally visible,
+paid, production, credentialed, account-sensitive, or provider-limited actions
+must pass `python3 -m harness.tools.resource_gate check --factory /factory ...`
+before approval or execution.
+
+Remote E2B teams must not execute external-world actions directly. They prepare
+artifacts and create hub-side cards with `python3 -m harness.tools.resource_gate
+card create --factory /factory ...`. The hub-side resource manager gates cards,
+requests approval when needed, and executes approved actions through the
+resource's configured `execution.skill` from `factory/skills/`. Deterministic
+code owns policy, reservations, approvals, and usage logging; channel-specific
+social/API/browser workflows belong in skills, not hardcoded adapters.
 """,
 }
 
@@ -273,6 +301,8 @@ GENERIC_PROTOCOL = f"""# PROTOCOL.md
 - Every non-ready resource must have a user-facing `resource-required` request. Run or rely on `python3 -m harness.tools.request_resources --factory /factory --db /factory/harness.sqlite3` before downstream planning.
 - Approval requests should be concrete decision packets: requested action, target resources, reason, artifact/diff/content, expected impact, blast radius, cost, preconditions checked, expiry, rollback/fallback, and what happens if denied.
 - Ticket metadata should include `resources` or `resource_dependencies` with resource IDs.
+- Before any externally visible, paid, production, credentialed, account-sensitive, or provider-limited action, run or require a deterministic resource-gate decision. If the resource is depleted, cooling down, outside quiet hours, or inside an observation window, schedule later or request more resources instead of asking for impossible approval.
+- Remote E2B teams prepare artifacts and resource-action cards only. External-world execution happens from the hub-side resource manager on the main machine or configured proxy, using resource-specific skills from `factory/skills/`.
 """
 
 GENERIC_HARD_RULES = """# HARD_RULES.md
@@ -286,6 +316,8 @@ GENERIC_HARD_RULES = """# HARD_RULES.md
 - Never let one blocked ticket stop unrelated active work.
 - Never create broad write scopes when a small scoped task is enough.
 - Never request approval for a production/public/paid/credentialed action until the target resource exists in `factory/resources/` and the approval explains exactly what will happen and why.
+- Never execute public posting, external outreach, paid spend, production mutation, credentialed account use, or provider-limited actions from E2B. E2B teams must return artifacts plus resource-action cards for hub-side gating/execution.
+- Never use a ready resource without checking its usage policy when the action can deplete quota, trigger account limits, spam subscribers, or invalidate an observation window.
 - Preserve unrelated user changes in any workspace.
 
 ## Remote Execution
@@ -417,6 +449,60 @@ Steps:
 4. Per fact: create wiki page, append to existing wiki page, or keep in MEMORY.md.
 5. Write with sources: [<inbound path>] frontmatter.
 6. Move processed input to factory/sources/<category>/.
+""",
+    "resource-action-card": """# resource-action-card
+Create hub-side cards for any action that touches the external world.
+
+Use when a team has prepared an artifact and wants to post, publish, spend,
+mutate production, use credentials, or consume a provider-limited resource.
+
+Rules:
+1. Never execute the external action from E2B or a remote-team sandbox.
+2. Read the relevant resource file under factory/resources/.
+3. Ensure the artifact exists under the requesting team's outbox.
+4. Create a card:
+   python3 -m harness.tools.resource_gate card create --factory /factory --resource <id> --action <action> --ticket-id <ticket> --team <team> --artifact <artifact> --why <reason> --json
+5. Return the card path and the artifact path.
+6. If the resource is missing, needs-access, blocked, or has no usage policy, create resource-readiness work instead of a publish/post approval.
+""",
+    "hub-resource-manager": """# hub-resource-manager
+Process resource action cards on the hub machine.
+
+This is a coordination skill, not a social-network adapter. It gates cards,
+requests approval when needed, and selects the resource-specific execution skill
+declared in the resource file.
+
+Steps:
+1. Read pending cards from factory/resource_action_cards/pending/.
+2. Run:
+   python3 -m harness.tools.resource_gate card gate --factory /factory <card-id-or-path> --json
+3. If blocked, leave the card in blocked/ and report available_at/next_step.
+4. If approval-required, create a concrete user approval card containing the artifact, resource ID, requested action, gate decision, blast radius, rollback/fallback, and reservation expiry.
+5. If ready and approved, read resource.execution.skill and invoke that skill from the hub/main-machine context.
+6. After success, run resource_gate commit with external_ref/evidence.
+7. If canceled or denied, run resource_gate release.
+
+Never add deterministic per-channel adapters to the harness for routine social,
+browser, or API workflows. Those workflows belong in resource action skills.
+""",
+    "resource-action-skill-template": """# resource-action-skill-template
+Template for a resource-specific hub execution skill.
+
+Create one skill per operational pattern, for example:
+- resource-action-social-post
+- resource-action-website-edit
+- resource-action-paid-campaign-launch
+- resource-action-analytics-export
+
+Required contract for each skill:
+1. Runs only on the hub/main machine or the configured proxy/network context.
+2. Accepts a resource action card path.
+3. Reads the resource file and prepared artifact.
+4. Refuses if there is no valid gate decision/reservation and required approval.
+5. Performs the channel-specific workflow: browser session, native app, API, manual handoff, or other project-specific method.
+6. Writes evidence/external_ref back to the card.
+7. Calls resource_gate commit after confirmed execution or resource_gate release on cancel/denial.
+8. Never prints secrets or stores credentials in factory files.
 """,
 }
 

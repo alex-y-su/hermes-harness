@@ -16,6 +16,7 @@ from harness.tools import (
     query_alerts,
     query_remote_teams,
     request_resources,
+    resource_gate,
     run_soak,
     query_user_requests,
     query_work_board,
@@ -84,6 +85,206 @@ def test_request_resources_creates_user_requests_once(tmp_path: Path):
     assert len(requests) == 1
     assert requests[0]["kind"] == "resource-required"
     assert json.loads(blocked.read_text())["user_request_id"] == "resource-social-main-required-first"
+
+
+def test_resource_gate_reserves_and_blocks_depleted_social_resource(tmp_path: Path):
+    factory = tmp_path / "factory"
+    resource = factory / "resources" / "social" / "x-main.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text(
+        json.dumps(
+            {
+                "id": "social/x-main",
+                "title": "Main X account",
+                "kind": "social_account",
+                "state": "ready",
+                "approval_policy": "public posts require explicit approval",
+                "usage_policy": {
+                    "actions": {
+                        "post_public": {
+                            "max_per_24h": 1,
+                            "reservation_ttl_minutes": 15,
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="reserve",
+            resource="social/x-main",
+            action="post_public",
+            ticket_id="tkt-one",
+            artifact="/factory/teams/brand/outbox/post.md",
+            now="2026-05-06T12:00:00Z",
+            json=True,
+        )
+    )
+
+    assert first["decision"] == "requires_approval"
+    assert first["reservation_id"].startswith("rsv-")
+    assert Path(first["decision_path"]).exists()
+    ledger = factory / "resource_usage" / "social" / "x-main.jsonl"
+    assert json.loads(ledger.read_text().splitlines()[0])["status"] == "reserved"
+
+    blocked = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="check",
+            resource="social/x-main",
+            action="post_public",
+            ticket_id="tkt-two",
+            artifact=None,
+            now="2026-05-06T12:05:00Z",
+            json=True,
+        )
+    )
+
+    assert blocked["decision"] == "blocked"
+    assert blocked["reason"] == "quota_depleted"
+    assert blocked["available_at"] == "2026-05-06T12:15:00Z"
+
+    released = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="release",
+            resource="social/x-main",
+            action="post_public",
+            ticket_id="tkt-one",
+            reservation_id=first["reservation_id"],
+            reason="approval denied",
+            json=True,
+        )
+    )
+    assert released["status"] == "released"
+
+    allowed_again = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="check",
+            resource="social/x-main",
+            action="post_public",
+            ticket_id="tkt-two",
+            artifact=None,
+            now="2026-05-06T12:05:00Z",
+            json=True,
+        )
+    )
+    assert allowed_again["decision"] == "requires_approval"
+
+
+def test_resource_gate_cooldown_quiet_hours_and_cards(tmp_path: Path):
+    factory = tmp_path / "factory"
+    resource = factory / "resources" / "websites" / "roomcord-com.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text(
+        json.dumps(
+            {
+                "id": "websites/roomcord-com",
+                "title": "Roomcord website",
+                "kind": "website",
+                "state": "ready",
+                "approval_policy": "production mutations require explicit approval",
+                "usage_policy": {
+                    "actions": {
+                        "change_page_title": {
+                            "max_per_30d": 2,
+                            "observation_window_days": 21,
+                            "quiet_hours_local": {
+                                "start": "22:00",
+                                "end": "08:00",
+                                "timezone": "UTC",
+                            },
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    resource_gate.run(
+        base_args(
+            tmp_path,
+            command="commit",
+            resource="websites/roomcord-com",
+            action="change_page_title",
+            ticket_id="tkt-old",
+            reservation_id=None,
+            external_ref="git:abc",
+            metadata=None,
+            json=True,
+        )
+    )
+    ledger = factory / "resource_usage" / "websites" / "roomcord-com.jsonl"
+    entry = json.loads(ledger.read_text().splitlines()[0])
+    entry["ts"] = "2026-05-01T10:00:00Z"
+    ledger.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+
+    cooldown = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="check",
+            resource="websites/roomcord-com",
+            action="change_page_title",
+            ticket_id="tkt-new",
+            artifact=None,
+            now="2026-05-06T12:00:00Z",
+            json=True,
+        )
+    )
+    assert cooldown["decision"] == "blocked"
+    assert cooldown["reason"] == "cooldown"
+    assert cooldown["available_at"] == "2026-05-22T10:00:00Z"
+
+    quiet = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="check",
+            resource="websites/roomcord-com",
+            action="change_page_title",
+            ticket_id="tkt-night",
+            artifact=None,
+            now="2026-06-01T23:00:00Z",
+            json=True,
+        )
+    )
+    assert quiet["decision"] == "blocked"
+    assert quiet["reason"] == "quiet_hours"
+    assert quiet["available_at"] == "2026-06-02T08:00:00Z"
+
+    card = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="card",
+            card_command="create",
+            resource="websites/roomcord-com",
+            action="change_page_title",
+            ticket_id="tkt-new",
+            team="dev",
+            artifact="/factory/teams/dev/outbox/title.md",
+            why="test SEO title",
+            title=None,
+            metadata=None,
+            json=True,
+        )
+    )
+    assert Path(card["path"]).parent.name == "pending"
+    gated = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="card",
+            card_command="gate",
+            card=card["card"]["card_id"],
+            now="2026-05-06T12:00:00Z",
+            json=True,
+        )
+    )
+    assert Path(gated["path"]).parent.name == "blocked"
+    assert gated["decision"]["reason"] == "cooldown"
 
 
 def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
