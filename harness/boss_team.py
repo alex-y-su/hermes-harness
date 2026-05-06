@@ -249,6 +249,8 @@ Resource files may be JSON or Markdown with frontmatter. Minimal fields:
 ```
 
 Allowed states: `ready`, `missing`, `needs-access`, `needs-setup`, `blocked`, `deprecated`.
+
+The harness watchdog mirrors every `missing`, `needs-access`, `needs-setup`, `blocked`, `declined`, or `denied` resource into an open user request. Do not create duplicate resource requests manually; update the resource file or the existing request.
 """,
 }
 
@@ -268,6 +270,7 @@ GENERIC_PROTOCOL = f"""# PROTOCOL.md
 - In-envelope internal planning, research synthesis, local draft creation, and local code review can proceed without user interruption.
 - External outreach, public publication, paid spend, production mutation, credential use, irreversible data changes, or legal/compliance-sensitive actions require standing approval or explicit user approval.
 - Before requesting approval, verify required resources in `factory/resources/` exist and are in a usable state. If a resource is missing or needs access/setup, create a resource setup/access ticket first.
+- Every non-ready resource must have a user-facing `resource-required` request. Run or rely on `python3 -m harness.tools.request_resources --factory /factory --db /factory/harness.sqlite3` before downstream planning.
 - Approval requests should be concrete decision packets: requested action, target resources, reason, artifact/diff/content, expected impact, blast radius, cost, preconditions checked, expiry, rollback/fallback, and what happens if denied.
 - Ticket metadata should include `resources` or `resource_dependencies` with resource IDs.
 """
@@ -279,6 +282,7 @@ GENERIC_HARD_RULES = """# HARD_RULES.md
 - Never use credentials, mutate production, contact external parties, publish content, or spend money unless covered by standing approval or explicit user approval.
 - Never invent facts. Mark assumptions and confidence levels.
 - Never hide blockers. Create or update blocker tickets with the exact missing input or approval.
+- Never leave a non-ready resource only as an internal note; it must also be represented as a user-facing resource request.
 - Never let one blocked ticket stop unrelated active work.
 - Never create broad write scopes when a small scoped task is enough.
 - Never request approval for a production/public/paid/credentialed action until the target resource exists in `factory/resources/` and the approval explains exactly what will happen and why.

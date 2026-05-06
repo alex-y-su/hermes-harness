@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -21,7 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("assignment_id")
     parser.add_argument("--dry-run", action="store_true", help="Do not contact E2B")
     parser.add_argument("--env", default=None, help="External bridge .env for resolving push secrets")
-    parser.add_argument("--timeout-seconds", type=int, default=120)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=int(os.getenv("HARNESS_ASSIGNMENT_E2B_TIMEOUT_SECONDS", "3600")),
+    )
     return parser
 
 
@@ -85,7 +90,7 @@ async def run_for_assignment(
     dry_run: bool = False,
     env_path: str | Path | None = None,
     secret_resolver: SecretResolver | None = None,
-    timeout_seconds: int = 120,
+    timeout_seconds: int = int(os.getenv("HARNESS_ASSIGNMENT_E2B_TIMEOUT_SECONDS", "3600")),
 ) -> dict[str, str]:
     team_dir = team_path(factory, team)
     if not team_dir.exists():

@@ -17,6 +17,7 @@ from harness.bridge.secrets import SecretResolver
 from harness.models import SubstrateHandle
 from harness.substrate.factory import build_driver
 from harness.tools.common import add_factory_args, paths
+from harness.tools import request_resources
 
 
 RUNNING_STATUSES = {"dispatched", "working", "resuming"}
@@ -303,6 +304,11 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
     stale_cutoff = _cutoff(int(getattr(args, "stale_minutes", 15)))
     user_request_cutoff = _cutoff(int(getattr(args, "user_request_alert_minutes", 60)))
     actions: list[dict[str, Any]] = []
+    resource_sync = request_resources.run(
+        argparse.Namespace(factory=str(factory), db=str(db_path), tag="latest", json=True)
+    )
+    for request_id in resource_sync["created"]:
+        actions.append({"action": "resource-request-created", "team_name": "system", "assignment_id": request_id})
     with db.session(db_path) as conn:
         expired_leases = db.cleanup_expired_leases(conn)
         if expired_leases:

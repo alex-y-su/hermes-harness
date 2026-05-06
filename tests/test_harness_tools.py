@@ -15,6 +15,7 @@ from harness.tools import (
     orchestrator,
     query_alerts,
     query_remote_teams,
+    request_resources,
     run_soak,
     query_user_requests,
     query_work_board,
@@ -39,6 +40,50 @@ def base_args(tmp_path: Path, **overrides):
     }
     data.update(overrides)
     return args(**data)
+
+
+def test_request_resources_creates_user_requests_once(tmp_path: Path):
+    factory = tmp_path / "factory"
+    ready = factory / "resources" / "website" / "main.json"
+    blocked = factory / "resources" / "social" / "main.json"
+    ready.parent.mkdir(parents=True)
+    blocked.parent.mkdir(parents=True)
+    ready.write_text(
+        json.dumps(
+            {
+                "id": "website/main",
+                "title": "Main website",
+                "kind": "website",
+                "state": "ready",
+                "owner": "dev",
+            }
+        ),
+        encoding="utf-8",
+    )
+    blocked.write_text(
+        json.dumps(
+            {
+                "id": "social/main",
+                "title": "Main social channels",
+                "kind": "external_accounts",
+                "state": "needs-access",
+                "owner": "growth",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = request_resources.run(base_args(tmp_path, tag="first", json=True))
+    second = request_resources.run(base_args(tmp_path, tag="second", json=True))
+
+    assert first["created"] == ["resource-social-main-required-first"]
+    assert second["created"] == []
+    assert second["existing"] == ["resource-social-main-required-first"]
+    with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
+        requests = db.list_approval_requests(conn, status="open")
+    assert len(requests) == 1
+    assert requests[0]["kind"] == "resource-required"
+    assert json.loads(blocked.read_text())["user_request_id"] == "resource-social-main-required-first"
 
 
 def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
