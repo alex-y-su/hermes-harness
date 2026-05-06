@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,10 @@ def dispatch_assignment(
     if _needs_assignment_sandbox(transport):
         if factory_dir is None or db_path is None:
             raise ValueError("factory_dir and db_path are required for per-assignment E2B dispatch")
+        max_machines = int(os.getenv("HARNESS_MAX_E2B_ASSIGNMENT_MACHINES", "0") or "0")
+        if max_machines > 0 and _active_assignment_sandbox_count(Path(db_path)) >= max_machines:
+            db.release_lease(resource_type="assignment", resource_id=assignment_id, holder=holder)
+            return {"skipped": True, "status": "capacity-limited", "max_e2b_assignment_machines": max_machines}
         sandbox = _run_async_assignment_sandbox(
             factory=Path(factory_dir),
             db_path=Path(db_path),
@@ -160,6 +165,23 @@ def _needs_assignment_sandbox(transport: dict[str, Any]) -> bool:
     if transport.get("substrate") != "e2b":
         return False
     return bool(transport.get("per_assignment")) or not bool(str(transport.get("agent_card_url") or "").strip())
+
+
+def _active_assignment_sandbox_count(db_path: Path) -> int:
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM assignment_sandboxes
+            WHERE substrate = 'e2b'
+              AND archived_at IS NULL
+              AND status NOT IN ('completed', 'failed', 'canceled', 'archived', 'paused_archived')
+            """
+        ).fetchone()
+        return int(row[0] if row else 0)
+    finally:
+        conn.close()
 
 
 def _run_async_assignment_sandbox(
