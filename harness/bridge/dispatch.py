@@ -173,10 +173,12 @@ def _active_assignment_sandbox_count(db_path: Path) -> int:
         row = conn.execute(
             """
             SELECT COUNT(*) AS count
-            FROM assignment_sandboxes
-            WHERE substrate = 'e2b'
-              AND archived_at IS NULL
-              AND status NOT IN ('completed', 'failed', 'canceled', 'archived', 'paused_archived')
+            FROM assignment_sandboxes s
+            JOIN team_assignments a ON a.assignment_id = s.assignment_id
+            WHERE s.substrate = 'e2b'
+              AND s.archived_at IS NULL
+              AND s.status NOT IN ('completed', 'failed', 'canceled', 'archived', 'paused_archived')
+              AND a.status IN ('dispatched', 'working', 'resuming', 'input-required', 'auth-required')
             """
         ).fetchone()
         return int(row[0] if row else 0)
