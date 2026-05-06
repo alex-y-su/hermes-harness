@@ -529,6 +529,85 @@ def assignment_detail(factory: Path, db_path: Path, assignment_id: str) -> dict[
     }
 
 
+def execution_ticket_detail(factory: Path, db_path: Path, ticket_id: str) -> dict[str, Any] | None:
+    with db.session(db_path) as conn:
+        row = conn.execute("SELECT * FROM execution_tickets WHERE ticket_id = ?", (ticket_id,)).fetchone()
+        if not row:
+            return None
+        ticket = _decode_ticket(row)
+        assignment = None
+        if ticket.get("assignment_id"):
+            assignment_row = conn.execute(
+                "SELECT * FROM team_assignments WHERE assignment_id = ?",
+                (ticket["assignment_id"],),
+            ).fetchone()
+            assignment = dict(assignment_row) if assignment_row else None
+        user_requests = [
+            _decode_user_request(request)
+            for request in conn.execute(
+                """
+                SELECT *
+                FROM approval_requests
+                WHERE request_id = ?
+                   OR assignment_id = ?
+                   OR assignment_id = ?
+                ORDER BY created_at DESC, request_id DESC
+                """,
+                (ticket.get("approval_request_id"), ticket_id, ticket.get("assignment_id")),
+            )
+        ]
+        child_tickets = [
+            _decode_ticket(child)
+            for child in conn.execute(
+                """
+                SELECT *
+                FROM execution_tickets
+                WHERE parent_ticket_id = ?
+                ORDER BY priority ASC, created_at DESC
+                """,
+                (ticket_id,),
+            )
+        ]
+    return {
+        **ticket,
+        "assignment": assignment,
+        "user_requests": user_requests,
+        "child_tickets": child_tickets,
+    }
+
+
+def user_request_detail(factory: Path, db_path: Path, request_id: str) -> dict[str, Any] | None:
+    with db.session(db_path) as conn:
+        row = conn.execute("SELECT * FROM approval_requests WHERE request_id = ?", (request_id,)).fetchone()
+        if not row:
+            return None
+        request = _decode_user_request(row)
+        assignment_row = conn.execute(
+            "SELECT * FROM team_assignments WHERE assignment_id = ?",
+            (request["assignment_id"],),
+        ).fetchone()
+        ticket_row = conn.execute(
+            """
+            SELECT *
+            FROM execution_tickets
+            WHERE approval_request_id = ?
+               OR ticket_id = ?
+               OR assignment_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (request_id, request["assignment_id"], request["assignment_id"]),
+        ).fetchone()
+    escalation_path = request.get("escalation_path")
+    return {
+        **request,
+        "assignment": dict(assignment_row) if assignment_row else None,
+        "ticket": _decode_ticket(ticket_row) if ticket_row else None,
+        "escalation_body": _read_text(Path(escalation_path)) if escalation_path else "",
+        "relative_escalation_path": _rel(factory, escalation_path),
+    }
+
+
 def graph(factory: Path, db_path: Path) -> dict[str, Any]:
     teams = list_teams(factory, db_path)
     nodes: dict[str, dict[str, Any]] = {}

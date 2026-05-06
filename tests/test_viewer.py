@@ -8,7 +8,16 @@ from harness import db
 from harness.tools import dispatch_team, spawn_team
 from harness.viewer import auth
 from harness.viewer.server import APP_HTML
-from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, schedules, team_detail
+from harness.viewer.data import (
+    assignment_detail,
+    dashboard,
+    execution_ticket_detail,
+    graph,
+    hub_config,
+    schedules,
+    team_detail,
+    user_request_detail,
+)
 
 
 def test_viewer_session_cookie_round_trip() -> None:
@@ -31,6 +40,10 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "Execution Tickets" in APP_HTML
     assert "executionTicketTable" in APP_HTML
     assert "kanbanTicketCard" in APP_HTML
+    assert "renderTicket" in APP_HTML
+    assert "renderRequest" in APP_HTML
+    assert 'path.startsWith("/tickets/")' in APP_HTML
+    assert 'path.startsWith("/requests/")' in APP_HTML
     assert "kanban--tickets" in APP_HTML
     assert "kanban-row" in APP_HTML
     assert "renderTabs" in APP_HTML
@@ -90,6 +103,33 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
             escalation_path=str(factory / "escalations" / "asn-view.md"),
             metadata={"source": "test"},
         )
+        db.upsert_execution_ticket(
+            conn,
+            ticket_id="tkt-approval-view",
+            title="Approve publish",
+            mode="escalate",
+            team_name="research",
+            status="blocked",
+            priority=5,
+            body="Approve this external action.",
+            assignment_id="tkt-approval-view",
+            approval_request_id="tkt-approval-view:approval-required",
+            acceptance=["approval is recorded"],
+            verification=["request card opens"],
+        )
+        db.upsert_approval_request(
+            conn,
+            request_id="tkt-approval-view:approval-required",
+            assignment_id="tkt-approval-view",
+            team_name="research",
+            task_id="task-approval-view",
+            kind="approval-required",
+            title="Approve publish",
+            prompt="Approve publishing this prepared artifact.",
+            required_fields=[{"name": "approved"}],
+            escalation_path=str(factory / "escalations" / "tkt-approval-view.md"),
+            metadata={"ticket_id": "tkt-approval-view"},
+        )
         db.upsert_approval_request(
             conn,
             request_id="asn-view:input-required",
@@ -131,10 +171,10 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
     digest = dashboard(factory, db_path)
     assert digest["counts"]["teams"] == 1
     assert digest["counts"]["active_assignments"] == 1
-    assert digest["counts"]["waiting_on_user"] == 1
+    assert digest["counts"]["waiting_on_user"] == 2
     assert digest["counts"]["open_alerts"] == 1
     assert digest["teams"][0]["team_name"] == "research"
-    assert digest["teams"][0]["open_user_requests"] == 1
+    assert digest["teams"][0]["open_user_requests"] == 2
     request_ids = {request["request_id"] for request in digest["user_requests"]}
     assert "asn-view:auth-required" in request_ids
     assert any(request["status"] == "resuming" for request in digest["user_requests"])
@@ -152,6 +192,16 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
     assert any(request["title"] == "OAuth required" for request in assignment["user_requests"])
     assert assignment["resumes"][0]["resume_id"] == "resume-view"
     assert assignment["alerts"][0]["alert_id"] == "alert-view"
+
+    ticket = execution_ticket_detail(factory, db_path, "tkt-approval-view")
+    assert ticket is not None
+    assert ticket["assignment"] is None
+    assert ticket["user_requests"][0]["request_id"] == "tkt-approval-view:approval-required"
+
+    request = user_request_detail(factory, db_path, "tkt-approval-view:approval-required")
+    assert request is not None
+    assert request["assignment"] is None
+    assert request["ticket"]["ticket_id"] == "tkt-approval-view"
 
     graph_data = graph(factory, db_path)
     node_ids = {node["id"] for node in graph_data["nodes"]}

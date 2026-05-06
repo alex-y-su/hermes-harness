@@ -15,7 +15,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 from harness import db
 from harness.factory import factory_path
 from harness.viewer import auth
-from harness.viewer.data import assignment_detail, dashboard, graph, hub_config, schedules, team_detail
+from harness.viewer.data import (
+    assignment_detail,
+    dashboard,
+    execution_ticket_detail,
+    graph,
+    hub_config,
+    schedules,
+    team_detail,
+    user_request_detail,
+)
 
 
 APP_HTML = r"""<!doctype html>
@@ -115,6 +124,8 @@ APP_HTML = r"""<!doctype html>
     function linkFor(kind, id) {
       if (kind === "team") return `#/teams/${encodeURIComponent(id)}`;
       if (kind === "assignment") return `#/assignments/${encodeURIComponent(id)}`;
+      if (kind === "ticket") return `#/tickets/${encodeURIComponent(id)}`;
+      if (kind === "request") return `#/requests/${encodeURIComponent(id)}`;
       if (kind === "hub") return `#/hubs/${encodeURIComponent(id)}`;
       return "#/";
     }
@@ -199,12 +210,12 @@ APP_HTML = r"""<!doctype html>
       if (!tickets.length) return '<p class="muted">No execution tickets.</p>';
       return `<table><thead><tr><th>Ticket</th><th>Status</th><th>Mode</th><th>Team</th><th>Priority</th><th>Assignment</th><th>Title</th><th>Updated</th></tr></thead><tbody>
         ${tickets.map(t => `<tr>
-          <td>${esc(t.ticket_id)}</td>
+          <td><a href="${linkFor("ticket", t.ticket_id)}">${esc(t.ticket_id)}</a></td>
           <td class="${statusClass(t.status)}">${esc(t.status)}</td>
           <td>${esc(t.mode)}</td>
           <td><a href="${linkFor("team", t.team_name)}">${esc(t.team_name)}</a></td>
           <td>${esc(t.priority)}</td>
-          <td>${t.assignment_id ? `<a href="${linkFor("assignment", t.assignment_id)}">${esc(t.assignment_id)}</a>` : ""}</td>
+          <td>${t.assignment_id ? esc(t.assignment_id) : ""}</td>
           <td>${esc(t.title)}</td>
           <td class="muted">${esc(t.updated_at || t.created_at || "")}</td>
         </tr>`).join("")}
@@ -215,11 +226,11 @@ APP_HTML = r"""<!doctype html>
       if (!visible.length) return '<p class="muted">No user-blocked requests.</p>';
       return `<table><thead><tr><th>Request</th><th>Status</th><th>Kind</th><th>Team</th><th>Assignment</th><th>Title</th><th>Created</th></tr></thead><tbody>
         ${visible.map(r => `<tr>
-          <td>${esc(r.request_id)}</td>
+          <td><a href="${linkFor("request", r.request_id)}">${esc(r.request_id)}</a></td>
           <td class="${statusClass(r.status)}">${esc(r.status)}</td>
           <td>${esc(r.kind)}</td>
           <td><a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></td>
-          <td><a href="${linkFor("assignment", r.assignment_id)}">${esc(r.assignment_id)}</a></td>
+          <td>${esc(r.assignment_id || "")}</td>
           <td>${esc(r.title)}</td>
           <td class="muted">${esc(r.created_at)}</td>
         </tr>`).join("")}
@@ -265,25 +276,25 @@ APP_HTML = r"""<!doctype html>
     }
     function kanbanRequestCard(r) {
       return `<article class="kanban-card">
-        <span class="kanban-title">${esc(r.title || r.request_id)}</span>
+        <a class="kanban-title" href="${linkFor("request", r.request_id)}">${esc(r.title || r.request_id)}</a>
         <div class="kanban-meta">
           <span class="pill ${statusClass(r.status)}">${esc(r.status)}</span>
           <span class="pill">${esc(r.kind)}</span>
           <span class="pill"><a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></span>
         </div>
-        <div class="muted"><a href="${linkFor("assignment", r.assignment_id)}">${esc(r.assignment_id)}</a> · ${esc(r.created_at || "")}</div>
+        <div class="muted">${esc(r.assignment_id || "")} · ${esc(r.created_at || "")}</div>
       </article>`;
     }
     function kanbanTicketCard(t) {
       return `<article class="kanban-card">
-        <span class="kanban-title">${esc(t.title || t.ticket_id)}</span>
+        <a class="kanban-title" href="${linkFor("ticket", t.ticket_id)}">${esc(t.title || t.ticket_id)}</a>
         <div class="kanban-meta">
           <span class="pill ${statusClass(t.status)}">${esc(t.status)}</span>
           <span class="pill">${esc(t.mode)}</span>
           <span class="pill"><a href="${linkFor("team", t.team_name)}">${esc(t.team_name)}</a></span>
         </div>
         <div class="muted">${esc(t.ticket_id)} · priority ${esc(t.priority || "")}</div>
-        ${t.assignment_id ? `<div class="muted">assignment <a href="${linkFor("assignment", t.assignment_id)}">${esc(t.assignment_id)}</a></div>` : ""}
+        ${t.assignment_id ? `<div class="muted">assignment ${esc(t.assignment_id)}</div>` : ""}
       </article>`;
     }
     function kanbanColumn(title, cards, renderer) {
@@ -433,6 +444,35 @@ APP_HTML = r"""<!doctype html>
         <h2>Resume Chain</h2><pre>${esc(JSON.stringify(a.resumes || [], null, 2))}</pre>
         <h2>Sandbox</h2><pre>${esc(JSON.stringify(a.sandbox || {}, null, 2))}</pre>
         <h2>Events</h2>${eventTable(a.events)}`;
+    }
+    async function renderTicket(id) {
+      const t = await api(`/api/tickets/${encodeURIComponent(id)}`);
+      app.innerHTML = `<h1>${esc(t.title || t.ticket_id)}</h1>
+        <p><span class="pill ${statusClass(t.status)}">${esc(t.status)}</span> <span class="pill">${esc(t.mode)}</span> <span class="pill">team: <a href="${linkFor("team", t.team_name)}">${esc(t.team_name)}</a></span></p>
+        <p class="muted">${esc(t.ticket_id)} · priority ${esc(t.priority || "")}</p>
+        ${t.assignment_id && t.assignment ? `<p>Assignment: <a href="${linkFor("assignment", t.assignment_id)}">${esc(t.assignment_id)}</a></p>` : t.assignment_id ? `<p class="muted">Assignment reference: ${esc(t.assignment_id)}</p>` : ""}
+        ${t.approval_request_id ? `<p>Approval request: <a href="${linkFor("request", t.approval_request_id)}">${esc(t.approval_request_id)}</a></p>` : ""}
+        <h2>Body</h2><pre>${esc(t.body || "No body.")}</pre>
+        <h2>Write Scope</h2><pre>${esc(JSON.stringify(t.write_scope || [], null, 2))}</pre>
+        <h2>Acceptance</h2><pre>${esc(JSON.stringify(t.acceptance || [], null, 2))}</pre>
+        <h2>Verification</h2><pre>${esc(JSON.stringify(t.verification || [], null, 2))}</pre>
+        <h2>Blockers</h2><pre>${esc(JSON.stringify(t.blockers || [], null, 2))}</pre>
+        <h2>Waiting on User</h2>${userRequestTable(t.user_requests || [])}
+        <h2>Child Tickets</h2>${executionTicketTable(t.child_tickets || [])}
+        <h2>Metadata</h2><pre>${esc(JSON.stringify(t.metadata || {}, null, 2))}</pre>`;
+    }
+    async function renderRequest(id) {
+      const r = await api(`/api/requests/${encodeURIComponent(id)}`);
+      app.innerHTML = `<h1>${esc(r.title || r.request_id)}</h1>
+        <p><span class="pill ${statusClass(r.status)}">${esc(r.status)}</span> <span class="pill">${esc(r.kind)}</span> <span class="pill">team: <a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></span></p>
+        <p class="muted">${esc(r.request_id)} · ${esc(r.created_at || "")}</p>
+        ${r.ticket ? `<p>Ticket: <a href="${linkFor("ticket", r.ticket.ticket_id)}">${esc(r.ticket.ticket_id)}</a></p>` : ""}
+        ${r.assignment ? `<p>Assignment: <a href="${linkFor("assignment", r.assignment.assignment_id)}">${esc(r.assignment.assignment_id)}</a></p>` : r.assignment_id ? `<p class="muted">Assignment reference: ${esc(r.assignment_id)}</p>` : ""}
+        <h2>Prompt</h2><pre>${esc(r.prompt || "No prompt.")}</pre>
+        <h2>Required Fields</h2><pre>${esc(JSON.stringify(r.required_fields || [], null, 2))}</pre>
+        <h2>Response</h2><pre>${esc(JSON.stringify(r.response || null, null, 2))}</pre>
+        <h2>Escalation</h2><p class="muted">${esc(r.relative_escalation_path || "")}</p><pre>${esc(r.escalation_body || "No escalation artifact.")}</pre>
+        <h2>Metadata</h2><pre>${esc(JSON.stringify(r.metadata || {}, null, 2))}</pre>`;
     }
     function renderHub(name) {
       const teams = state.dashboard.teams.filter(t => t.hub === name);
@@ -593,6 +633,8 @@ APP_HTML = r"""<!doctype html>
         else if (path === "/graph") await renderGraph();
         else if (path.startsWith("/teams/")) await renderTeam(decodeURIComponent(path.slice(7)));
         else if (path.startsWith("/assignments/")) await renderAssignment(decodeURIComponent(path.slice(13)));
+        else if (path.startsWith("/tickets/")) await renderTicket(decodeURIComponent(path.slice(9)));
+        else if (path.startsWith("/requests/")) await renderRequest(decodeURIComponent(path.slice(10)));
         else if (path.startsWith("/hubs/")) renderHub(decodeURIComponent(path.slice(6)));
         else renderDashboard();
       } catch (error) {
@@ -734,6 +776,22 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 detail = assignment_detail(self.config.factory, self.config.db_path, assignment_id)
                 if detail is None:
                     self.send_error(HTTPStatus.NOT_FOUND, "unknown assignment")
+                    return
+                self._json(detail)
+                return
+            if path.startswith("/api/tickets/"):
+                ticket_id = unquote(path.removeprefix("/api/tickets/"))
+                detail = execution_ticket_detail(self.config.factory, self.config.db_path, ticket_id)
+                if detail is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "unknown ticket")
+                    return
+                self._json(detail)
+                return
+            if path.startswith("/api/requests/"):
+                request_id = unquote(path.removeprefix("/api/requests/"))
+                detail = user_request_detail(self.config.factory, self.config.db_path, request_id)
+                if detail is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "unknown request")
                     return
                 self._json(detail)
                 return
