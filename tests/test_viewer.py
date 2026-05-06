@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 from harness import db
@@ -10,6 +12,7 @@ from harness.tools import dispatch_team, spawn_team
 from harness.viewer import auth
 from harness.viewer.server import APP_HTML
 from harness.viewer.data import (
+    _E2B_PROVIDER_CACHE,
     assignment_detail,
     dashboard,
     execution_ticket_detail,
@@ -58,7 +61,10 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "renderOrgGraphSvg({maxAssignmentsPerTeam: 2" in APP_HTML
 
 
-def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
+def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.delenv("E2B_ACCESS_TOKEN", raising=False)
+    _E2B_PROVIDER_CACHE.update({"expires_at": 0.0, "summary": None})
     factory = tmp_path / "factory"
     asyncio.run(
         spawn_team.run(
@@ -254,6 +260,56 @@ def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path) -> None:
     node_ids = {node["id"] for node in graph_data["nodes"]}
     assert "team:research" in node_ids
     assert "assignment:asn-view" in node_ids
+
+
+def test_dashboard_prefers_live_e2b_provider_count(tmp_path: Path, monkeypatch) -> None:
+    factory = tmp_path / "factory"
+    db_path = db.default_db_path(factory)
+    db.init_db(db_path)
+    with db.session(db_path) as conn:
+        db.save_assignment_sandbox(
+            conn,
+            assignment_id="dead-in-db",
+            team_name="research",
+            handle=SubstrateHandle(team_name="research", substrate="e2b", handle="dead-sandbox"),
+            agent_card_url=None,
+            status="booted",
+        )
+
+    class FakePaginator:
+        def __init__(self) -> None:
+            self._done = False
+
+        @property
+        def has_next(self) -> bool:
+            return not self._done
+
+        def next_items(self) -> list[SimpleNamespace]:
+            self._done = True
+            return [SimpleNamespace(sandbox_id="live-a"), SimpleNamespace(sandbox_id="live-b")]
+
+    class FakeSandbox:
+        @staticmethod
+        def list(**_: object) -> FakePaginator:
+            return FakePaginator()
+
+    class FakeQuery:
+        def __init__(self, **_: object) -> None:
+            pass
+
+    fake_e2b = SimpleNamespace(
+        Sandbox=FakeSandbox,
+        SandboxQuery=FakeQuery,
+        SandboxState=SimpleNamespace(RUNNING="running"),
+    )
+    monkeypatch.setenv("E2B_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "e2b", fake_e2b)
+    _E2B_PROVIDER_CACHE.update({"expires_at": 0.0, "summary": None})
+
+    digest = dashboard(factory, db_path)
+    assert digest["counts"]["active_e2b_machines"] == 2
+    assert digest["e2b_machines"]["database_active"] == 1
+    assert digest["e2b_machines"]["source"] == "provider"
 
 
 def test_hub_config_falls_back_to_repo_templates_for_empty_factory(tmp_path: Path) -> None:

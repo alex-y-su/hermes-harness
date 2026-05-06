@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,8 @@ from harness import db
 
 TERMINAL_STATUSES = {"completed", "failed", "canceled", "archived"}
 TERMINAL_SANDBOX_STATUSES = {"completed", "failed", "canceled", "archived", "paused_archived"}
+E2B_PROVIDER_CACHE_TTL_SECONDS = 10
+_E2B_PROVIDER_CACHE: dict[str, Any] = {"expires_at": 0.0, "summary": None}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILENAMES = {
     "AGENTS.md",
@@ -130,15 +134,20 @@ def _e2b_machine_summary(conn: Any) -> dict[str, Any]:
             """
         )
     ]
+    real_rows = [row for row in rows if _is_real_e2b_handle(row.get("handle"))]
     active_rows = [
         row
-        for row in rows
+        for row in real_rows
         if not row.get("archived_at")
         and str(row.get("status") or "") not in TERMINAL_SANDBOX_STATUSES
-        and _is_real_e2b_handle(row.get("handle"))
     ]
+    provider = _e2b_provider_summary({str(_decode_handle(row.get("handle")).get("handle")) for row in real_rows})
+    provider_active = provider.get("running") if provider.get("available") else None
     return {
-        "active": len(active_rows),
+        "active": int(provider_active if provider_active is not None else len(active_rows)),
+        "source": "provider" if provider.get("available") else "database",
+        "provider": provider,
+        "database_active": len(active_rows),
         "blocked": sum(1 for row in active_rows if row.get("status") == "blocked"),
         "teams": sorted({row["team_name"] for row in active_rows if row.get("team_name")}),
         "assignments": [
@@ -152,8 +161,53 @@ def _e2b_machine_summary(conn: Any) -> dict[str, Any]:
             }
             for row in active_rows
         ],
-        "tracked": len([row for row in rows if _is_real_e2b_handle(row.get("handle"))]),
+        "tracked": len(real_rows),
     }
+
+
+def _e2b_provider_summary(tracked_sandbox_ids: set[str]) -> dict[str, Any]:
+    now = time.monotonic()
+    cached = _E2B_PROVIDER_CACHE.get("summary")
+    if cached is not None and now < float(_E2B_PROVIDER_CACHE.get("expires_at") or 0):
+        return dict(cached)
+
+    api_key = os.getenv("E2B_API_KEY") or os.getenv("E2B_ACCESS_TOKEN")
+    if not api_key:
+        summary = {"available": False, "error": "missing-api-key", "running": None, "tracked_running": None}
+        _E2B_PROVIDER_CACHE.update({"expires_at": now + E2B_PROVIDER_CACHE_TTL_SECONDS, "summary": summary})
+        return dict(summary)
+
+    try:
+        from e2b import Sandbox, SandboxQuery, SandboxState  # type: ignore
+
+        paginator = Sandbox.list(query=SandboxQuery(state=[SandboxState.RUNNING]), limit=100, api_key=api_key)
+        running_ids: set[str] = set()
+        while paginator.has_next:
+            for item in paginator.next_items():
+                sandbox_id = getattr(item, "sandbox_id", None)
+                if sandbox_id:
+                    running_ids.add(str(sandbox_id))
+    except Exception as exc:
+        summary = {
+            "available": False,
+            "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+            "running": None,
+            "tracked_running": None,
+        }
+        _E2B_PROVIDER_CACHE.update({"expires_at": now + E2B_PROVIDER_CACHE_TTL_SECONDS, "summary": summary})
+        return dict(summary)
+
+    tracked_running = sorted(running_ids & tracked_sandbox_ids)
+    summary = {
+        "available": True,
+        "error": None,
+        "running": len(running_ids),
+        "tracked_running": len(tracked_running),
+        "tracked_running_ids": tracked_running[:200],
+        "refreshed_at": datetime.now(UTC).isoformat(),
+    }
+    _E2B_PROVIDER_CACHE.update({"expires_at": now + E2B_PROVIDER_CACHE_TTL_SECONDS, "summary": summary})
+    return dict(summary)
 
 
 def _safe_schedule_error(value: Any) -> str | None:
