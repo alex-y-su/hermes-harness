@@ -478,6 +478,13 @@ APP_HTML = r"""<!doctype html>
       const teams = state.dashboard.teams.filter(t => t.hub === name);
       app.innerHTML = `<h1>Hub: ${esc(name)}</h1><h2>Subteams</h2>${teamTable(teams)}`;
     }
+    function compactGraphText(value, max = 25) {
+      const text = String(value || "");
+      if (text.length <= max) return text;
+      const head = Math.max(8, Math.floor((max - 1) * 0.62));
+      const tail = Math.max(5, max - head - 1);
+      return `${text.slice(0, head)}…${text.slice(-tail)}`;
+    }
     function renderOrgGraphSvg(options = {}) {
       const d = state.dashboard;
       const maxAssignmentsPerTeam = options.maxAssignmentsPerTeam ?? 4;
@@ -528,9 +535,10 @@ APP_HTML = r"""<!doctype html>
       const height = Math.max(viewportHeight, contentBottom + topPad);
       const nodeMarkup = nodes.map(n => `
         <a href="${n.href}">
+          <title>${esc(n.label)}${n.meta ? ` - ${esc(n.meta)}` : ""}</title>
           <rect class="org-card org-${n.kind}" x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}"></rect>
-          <text class="node-label" x="${n.x + 14}" y="${n.y + 28}">${esc(n.label)}</text>
-          <text class="node-meta" x="${n.x + 14}" y="${n.y + 50}">${esc(n.meta)}</text>
+          <text class="node-label" x="${n.x + 14}" y="${n.y + 28}">${esc(compactGraphText(n.label, 24))}</text>
+          <text class="node-meta" x="${n.x + 14}" y="${n.y + 50}">${esc(compactGraphText(n.meta, 28))}</text>
         </a>`).join("");
       const edgeMarkup = edges.map(e => {
         if (e.type === "tree") {
