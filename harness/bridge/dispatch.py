@@ -62,14 +62,42 @@ def dispatch_assignment(
         if max_machines > 0 and _active_assignment_sandbox_count(Path(db_path)) >= max_machines:
             db.release_lease(resource_type="assignment", resource_id=assignment_id, holder=holder)
             return {"skipped": True, "status": "capacity-limited", "max_e2b_assignment_machines": max_machines}
-        sandbox = _run_async_assignment_sandbox(
-            factory=Path(factory_dir),
-            db_path=Path(db_path),
-            team=team_name,
-            assignment_id=assignment_id,
-            dry_run=e2b_dry_run,
-            secrets=secrets,
-        )
+        try:
+            sandbox = _run_async_assignment_sandbox(
+                factory=Path(factory_dir),
+                db_path=Path(db_path),
+                team=team_name,
+                assignment_id=assignment_id,
+                dry_run=e2b_dry_run,
+                secrets=secrets,
+            )
+        except Exception as error:
+            retry_row = db.mark_assignment_retrying(
+                assignment_id=assignment_id,
+                error=str(error),
+                delay_seconds=retry_delay_seconds,
+                max_retries=max_retries,
+            )
+            db.release_lease(resource_type="assignment", resource_id=assignment_id, holder=holder)
+            db.append_event(
+                team_name=team_name,
+                assignment_id=assignment_id,
+                source="a2a-bridge",
+                kind="sandbox-provision-retrying" if retry_row is not None and retry_row["status"] == "retrying" else "sandbox-provision-failed",
+                state=retry_row["status"] if retry_row is not None else "failed",
+                metadata={
+                    "error": str(error),
+                    "retry_count": retry_row["retry_count"] if retry_row is not None else None,
+                    "next_retry_at": retry_row["next_retry_at"] if retry_row is not None else None,
+                },
+            )
+            return {
+                "dispatched": False,
+                "status": retry_row["status"] if retry_row is not None else "failed",
+                "retry_count": retry_row["retry_count"] if retry_row is not None else None,
+                "next_retry_at": retry_row["next_retry_at"] if retry_row is not None else None,
+                "error": str(error),
+            }
         transport = {**transport, "agent_card_url": sandbox["agent_card_url"]}
         provisioned_assignment_sandbox = True
     bearer_token = secrets.resolve(transport.get("team_bearer_token_ref"))
@@ -178,7 +206,7 @@ def _active_assignment_sandbox_count(db_path: Path) -> int:
             WHERE s.substrate = 'e2b'
               AND s.archived_at IS NULL
               AND s.status NOT IN ('completed', 'failed', 'canceled', 'archived', 'paused_archived')
-              AND a.status IN ('dispatched', 'working', 'resuming', 'input-required', 'auth-required')
+              AND a.status NOT IN ('completed', 'failed', 'canceled', 'archived', 'stale')
             """
         ).fetchone()
         return int(row[0] if row else 0)
