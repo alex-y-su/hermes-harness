@@ -5,6 +5,10 @@ import html
 import json
 import os
 import secrets
+import time
+import urllib.error
+import urllib.request
+import uuid
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +30,114 @@ from harness.viewer.data import (
     team_detail,
     user_request_detail,
 )
+
+CHAT_MAX_MESSAGES = 40
+CHAT_MAX_CONTENT_CHARS = 24_000
+
+
+def _chat_manifest_paths() -> list[Path]:
+    paths: list[Path] = []
+    if os.getenv("HARNESS_VIEWER_CHAT_MANIFEST"):
+        paths.append(Path(os.environ["HARNESS_VIEWER_CHAT_MANIFEST"]).expanduser())
+    if os.getenv("HERMES_A2A_MANIFEST"):
+        paths.append(Path(os.environ["HERMES_A2A_MANIFEST"]).expanduser())
+    hermes_home = Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser()
+    paths.append(hermes_home / "a2a-team.json")
+    return paths
+
+
+def _load_chat_manifest_agent() -> dict[str, Any]:
+    for path in _chat_manifest_paths():
+        if not path.exists():
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        agent = data.get("public_agent")
+        if isinstance(agent, dict):
+            return agent
+        profiles = data.get("profiles")
+        if isinstance(profiles, list):
+            for profile in profiles:
+                if isinstance(profile, dict) and profile.get("public"):
+                    return profile
+    return {}
+
+
+def _clean_chat_messages(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        raise ValueError("messages must be an array")
+    messages: list[dict[str, str]] = []
+    for item in raw[-CHAT_MAX_MESSAGES:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or "").strip()
+        if content:
+            messages.append({"role": role, "content": content[:CHAT_MAX_CONTENT_CHARS]})
+    if not messages:
+        raise ValueError("messages must include at least one user or assistant message")
+    if messages[-1]["role"] != "user":
+        raise ValueError("last message must be from the user")
+    return messages
+
+
+def _chat_prompt(messages: list[dict[str, str]]) -> str:
+    transcript = "\n\n".join(f"{message['role'].title()}:\n{message['content']}" for message in messages)
+    latest = messages[-1]["content"]
+    return (
+        "Continue this Hermes Hub Viewer chat. Use the conversation transcript for context, "
+        "answer the latest user message, and format the response as Markdown.\n\n"
+        f"Conversation transcript:\n{transcript}\n\n"
+        f"Latest user message:\n{latest}"
+    )
+
+
+def _extract_a2a_text(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    candidates = [value]
+    if isinstance(value.get("task"), dict):
+        candidates.append(value["task"])
+    if isinstance(value.get("result"), dict):
+        candidates.append(value["result"])
+        if isinstance(value["result"].get("task"), dict):
+            candidates.append(value["result"]["task"])
+    for candidate in candidates:
+        status = candidate.get("status")
+        if isinstance(status, dict):
+            message = status.get("message")
+            if isinstance(message, dict):
+                text = _parts_text(message.get("parts"))
+                if text:
+                    return text
+        for artifact in candidate.get("artifacts") or []:
+            if isinstance(artifact, dict):
+                text = _parts_text(artifact.get("parts"))
+                if text:
+                    return text
+    return ""
+
+
+def _extract_a2a_task_id(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for candidate in (value, value.get("task"), value.get("result")):
+        if isinstance(candidate, dict) and candidate.get("id"):
+            return str(candidate["id"])
+        if isinstance(candidate, dict) and isinstance(candidate.get("task"), dict) and candidate["task"].get("id"):
+            return str(candidate["task"]["id"])
+    return ""
+
+
+def _parts_text(parts: Any) -> str:
+    if not isinstance(parts, list):
+        return ""
+    rendered: list[str] = []
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            rendered.append(part["text"])
+    return "\n\n".join(rendered).strip()
 
 
 APP_HTML = r"""<!doctype html>
@@ -107,7 +219,37 @@ APP_HTML = r"""<!doctype html>
     .kanban-title { display: block; font-weight: 650; overflow-wrap: anywhere; }
     .kanban-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .kanban-empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 10px; min-height: 56px; }
+    .chat-toggle { position: fixed; right: 20px; bottom: 20px; z-index: 20; min-width: 92px; min-height: 42px; background: var(--accent); color: #101214; border-color: transparent; font-weight: 700; box-shadow: 0 12px 30px rgba(0,0,0,.32); }
+    .chat-window { position: fixed; right: 20px; bottom: 74px; z-index: 19; width: min(420px, calc(100vw - 32px)); height: min(620px, calc(100vh - 96px)); display: none; grid-template-rows: auto 1fr auto; border: 1px solid var(--line); background: #15191d; border-radius: 8px; box-shadow: 0 18px 46px rgba(0,0,0,.46); overflow: hidden; }
+    .chat-window.open { display: grid; }
+    .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: #12161a; }
+    .chat-head h2 { margin: 0; font-size: 14px; }
+    .chat-head-actions { display: flex; gap: 6px; }
+    .chat-head-actions button { min-width: 30px; height: 30px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
+    .chat-log { padding: 12px; overflow: auto; display: grid; gap: 10px; align-content: start; }
+    .chat-empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; padding: 12px; }
+    .chat-message { border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; overflow-wrap: anywhere; }
+    .chat-message.user { margin-left: 34px; background: #1d2927; border-color: #31584f; }
+    .chat-message.assistant { margin-right: 34px; background: var(--panel); }
+    .chat-role { color: var(--muted); font-size: 12px; margin-bottom: 5px; text-transform: uppercase; }
+    .chat-md > *:first-child { margin-top: 0; }
+    .chat-md > *:last-child { margin-bottom: 0; }
+    .chat-md p, .chat-md ul, .chat-md ol, .chat-md blockquote { margin: 0 0 9px; }
+    .chat-md h1, .chat-md h2, .chat-md h3 { margin: 12px 0 7px; color: var(--text); text-transform: none; }
+    .chat-md h1 { font-size: 18px; }
+    .chat-md h2 { font-size: 16px; }
+    .chat-md h3 { font-size: 14px; }
+    .chat-md ul, .chat-md ol { padding-left: 22px; }
+    .chat-md code { background: #0d1013; border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; }
+    .chat-md pre { margin: 0 0 9px; max-height: 260px; padding: 10px; }
+    .chat-md blockquote { border-left: 3px solid var(--accent); padding-left: 10px; color: var(--muted); }
+    .chat-form { border-top: 1px solid var(--line); padding: 10px; background: #12161a; }
+    .chat-form textarea { min-height: 78px; max-height: 180px; margin: 0; }
+    .chat-form-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+    .chat-send { min-width: 74px; background: var(--accent); color: #101214; border-color: transparent; font-weight: 700; }
+    .chat-send:disabled { cursor: wait; opacity: .72; }
     @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } aside { position: static; height: auto; } .split { grid-template-columns: 1fr; } main { padding: 16px; } .kanban, .kanban--tickets { grid-template-columns: 1fr; } }
+    @media (max-width: 560px) { .chat-window { left: 12px; right: 12px; bottom: 68px; width: auto; height: min(600px, calc(100vh - 84px)); } .chat-toggle { right: 12px; bottom: 12px; } .chat-message.user, .chat-message.assistant { margin-left: 0; margin-right: 0; } }
   </style>
 </head>
 <body>
@@ -119,17 +261,220 @@ APP_HTML = r"""<!doctype html>
     </aside>
     <main id="app"></main>
   </div>
+  <button class="chat-toggle" id="chat-toggle" type="button" aria-controls="chat-window" aria-expanded="false">Chat</button>
+  <section class="chat-window" id="chat-window" aria-label="Hermes chat">
+    <div class="chat-head">
+      <h2>Hermes Chat</h2>
+      <div class="chat-head-actions">
+        <button id="chat-clear" type="button" title="Clear chat">Clear</button>
+        <button id="chat-close" type="button" title="Close chat">x</button>
+      </div>
+    </div>
+    <div class="chat-log" id="chat-log" aria-live="polite"></div>
+    <form class="chat-form" id="chat-form">
+      <textarea id="chat-input" placeholder="Message Hermes"></textarea>
+      <div class="chat-form-row">
+        <span class="muted" id="chat-status">Ready</span>
+        <button class="chat-send" id="chat-send" type="submit">Send</button>
+      </div>
+    </form>
+  </section>
   <script>
     const app = document.getElementById("app");
     const nav = document.getElementById("nav");
     const filter = document.getElementById("filter");
+    const chatToggle = document.getElementById("chat-toggle");
+    const chatWindow = document.getElementById("chat-window");
+    const chatClose = document.getElementById("chat-close");
+    const chatClear = document.getElementById("chat-clear");
+    const chatLog = document.getElementById("chat-log");
+    const chatForm = document.getElementById("chat-form");
+    const chatInput = document.getElementById("chat-input");
+    const chatSend = document.getElementById("chat-send");
+    const chatStatus = document.getElementById("chat-status");
     let state = { dashboard: null, graph: null };
+    let chatState = { open: false, busy: false, contextId: null, messages: [] };
+    const CHAT_STORAGE_KEY = "hermes.viewer.chat.v1";
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     async function api(path) {
       const res = await fetch(path);
       if (res.status === 401) location.href = "/login";
       if (!res.ok) throw new Error(await res.text());
       return res.json();
+    }
+    async function postApi(path, payload) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      if (res.status === 401) location.href = "/login";
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+    function loadChat() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || "{}");
+        chatState = {
+          open: Boolean(saved.open),
+          busy: false,
+          contextId: saved.contextId || null,
+          messages: Array.isArray(saved.messages) ? saved.messages.filter(m => m && (m.role === "user" || m.role === "assistant") && m.content).slice(-80) : []
+        };
+      } catch {
+        chatState = { open: false, busy: false, contextId: null, messages: [] };
+      }
+    }
+    function saveChat() {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify({
+        open: chatState.open,
+        contextId: chatState.contextId,
+        messages: chatState.messages.slice(-80)
+      }));
+    }
+    function renderInlineMarkdown(source) {
+      const code = [];
+      let text = esc(source).replace(/`([^`]+)`/g, (_, value) => {
+        const token = `@@CODE${code.length}@@`;
+        code.push(`<code>${value}</code>`);
+        return token;
+      });
+      text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      text = text.replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+      code.forEach((html, index) => { text = text.replace(`@@CODE${index}@@`, html); });
+      return text;
+    }
+    function renderMarkdown(source) {
+      const lines = String(source || "").replace(/\r\n/g, "\n").split("\n");
+      const out = [];
+      let paragraph = [];
+      let list = null;
+      let quote = [];
+      let code = null;
+      function flushParagraph() {
+        if (!paragraph.length) return;
+        out.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+        paragraph = [];
+      }
+      function flushList() {
+        if (!list) return;
+        out.push(`<${list.type}>${list.items.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${list.type}>`);
+        list = null;
+      }
+      function flushQuote() {
+        if (!quote.length) return;
+        out.push(`<blockquote>${quote.map(line => `<p>${renderInlineMarkdown(line)}</p>`).join("")}</blockquote>`);
+        quote = [];
+      }
+      for (const line of lines) {
+        const fence = line.match(/^```/);
+        if (fence) {
+          if (code) {
+            out.push(`<pre><code>${esc(code.lines.join("\n"))}</code></pre>`);
+            code = null;
+          } else {
+            flushParagraph(); flushList(); flushQuote();
+            code = {lines: []};
+          }
+          continue;
+        }
+        if (code) {
+          code.lines.push(line);
+          continue;
+        }
+        if (!line.trim()) {
+          flushParagraph(); flushList(); flushQuote();
+          continue;
+        }
+        const heading = line.match(/^(#{1,3})\s+(.+)$/);
+        if (heading) {
+          flushParagraph(); flushList(); flushQuote();
+          out.push(`<h${heading[1].length}>${renderInlineMarkdown(heading[2])}</h${heading[1].length}>`);
+          continue;
+        }
+        const unordered = line.match(/^\s*[-*]\s+(.+)$/);
+        const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+        if (unordered || ordered) {
+          flushParagraph(); flushQuote();
+          const type = unordered ? "ul" : "ol";
+          if (!list || list.type !== type) flushList();
+          list ||= {type, items: []};
+          list.items.push((unordered || ordered)[1]);
+          continue;
+        }
+        const quoted = line.match(/^>\s?(.*)$/);
+        if (quoted) {
+          flushParagraph(); flushList();
+          quote.push(quoted[1]);
+          continue;
+        }
+        paragraph.push(line.trim());
+      }
+      if (code) out.push(`<pre><code>${esc(code.lines.join("\n"))}</code></pre>`);
+      flushParagraph(); flushList(); flushQuote();
+      return out.join("");
+    }
+    function renderChat() {
+      chatWindow.classList.toggle("open", chatState.open);
+      chatToggle.setAttribute("aria-expanded", String(chatState.open));
+      chatSend.disabled = chatState.busy;
+      chatStatus.textContent = chatState.busy ? "Hermes is responding" : "Ready";
+      chatLog.innerHTML = chatState.messages.length
+        ? chatState.messages.map(message => `<article class="chat-message ${esc(message.role)}"><div class="chat-role">${esc(message.role === "user" ? "You" : "Hermes")}</div><div class="chat-md">${renderMarkdown(message.content)}</div></article>`).join("")
+        : '<div class="chat-empty">Start a conversation with Hermes.</div>';
+      chatLog.scrollTop = chatLog.scrollHeight;
+      saveChat();
+    }
+    async function sendChat() {
+      const content = chatInput.value.trim();
+      if (!content || chatState.busy) return;
+      chatInput.value = "";
+      chatState.messages.push({role: "user", content, ts: new Date().toISOString()});
+      chatState.busy = true;
+      renderChat();
+      try {
+        const result = await postApi("/api/chat", {
+          context_id: chatState.contextId,
+          messages: chatState.messages
+        });
+        chatState.contextId = result.context_id || chatState.contextId;
+        chatState.messages.push(result.message || {role: "assistant", content: "Hermes returned an empty response."});
+      } catch (error) {
+        chatState.messages.push({role: "assistant", content: `**Chat error**\n\n${error.message}`});
+      } finally {
+        chatState.busy = false;
+        renderChat();
+      }
+    }
+    function initChat() {
+      loadChat();
+      chatToggle.addEventListener("click", () => {
+        chatState.open = !chatState.open;
+        renderChat();
+        if (chatState.open) chatInput.focus();
+      });
+      chatClose.addEventListener("click", () => {
+        chatState.open = false;
+        renderChat();
+      });
+      chatClear.addEventListener("click", () => {
+        chatState.contextId = null;
+        chatState.messages = [];
+        renderChat();
+        chatInput.focus();
+      });
+      chatForm.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        sendChat();
+      });
+      chatInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+          ev.preventDefault();
+          sendChat();
+        }
+      });
+      renderChat();
     }
     function linkFor(kind, id) {
       if (kind === "team") return `#/teams/${encodeURIComponent(id)}`;
@@ -751,6 +1096,7 @@ APP_HTML = r"""<!doctype html>
     }
     filter.addEventListener("input", renderNav);
     window.addEventListener("hashchange", route);
+    initChat();
     route();
     setInterval(async () => {
       state.dashboard = await api("/api/dashboard");
@@ -796,11 +1142,142 @@ LOGIN_HTML = """<!doctype html>
 
 
 class ViewerConfig:
-    def __init__(self, *, factory: Path, db_path: Path, access_code: str, cookie_secret: str) -> None:
+    def __init__(
+        self,
+        *,
+        factory: Path,
+        db_path: Path,
+        access_code: str,
+        cookie_secret: str,
+        chat_endpoint: str = "",
+        chat_token: str = "",
+        chat_profile: str = "boss",
+        hermes_bin: str = "",
+        chat_model: str = "",
+        chat_timeout_seconds: int = 900,
+    ) -> None:
         self.factory = factory
         self.db_path = db_path
         self.access_code = access_code
         self.cookie_secret = cookie_secret
+        self.chat_endpoint = chat_endpoint
+        self.chat_token = chat_token
+        self.chat_profile = chat_profile
+        self.hermes_bin = hermes_bin or str(Path.home() / ".local/bin/hermes")
+        self.chat_model = chat_model or "gpt-5.3-codex"
+        self.chat_timeout_seconds = chat_timeout_seconds
+
+
+def _chat_endpoint(config: ViewerConfig) -> str:
+    if config.chat_endpoint:
+        return config.chat_endpoint
+    agent = _load_chat_manifest_agent()
+    return str(agent.get("jsonrpc_url") or agent.get("url") or "")
+
+
+def _chat_token(config: ViewerConfig) -> str:
+    if config.chat_token:
+        return config.chat_token
+    agent = _load_chat_manifest_agent()
+    return str(agent.get("auth_token") or "")
+
+
+def send_chat_message(config: ViewerConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    messages = _clean_chat_messages(payload.get("messages"))
+    context_id = str(payload.get("context_id") or f"viewer-chat-{uuid.uuid4().hex[:16]}")
+    prompt = _chat_prompt(messages)
+    endpoint = _chat_endpoint(config)
+    if endpoint:
+        result = _send_chat_a2a(
+            endpoint=endpoint,
+            token=_chat_token(config),
+            context_id=context_id,
+            prompt=prompt,
+            timeout_seconds=config.chat_timeout_seconds,
+        )
+        transport = "a2a"
+    else:
+        result = _send_chat_local_hermes(config, context_id=context_id, prompt=prompt)
+        transport = "local-hermes"
+    content = _extract_a2a_text(result)
+    if not content:
+        raise RuntimeError("Hermes returned no chat content")
+    return {
+        "context_id": context_id,
+        "task_id": _extract_a2a_task_id(result),
+        "transport": transport,
+        "message": {"role": "assistant", "content": content, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+    }
+
+
+def _send_chat_a2a(*, endpoint: str, token: str, context_id: str, prompt: str, timeout_seconds: int) -> dict[str, Any]:
+    task_id = f"viewer-chat-{uuid.uuid4().hex[:16]}"
+    body = {
+        "jsonrpc": "2.0",
+        "id": str(uuid.uuid4()),
+        "method": "message/send",
+        "params": {
+            "configuration": {"blocking": True, "acceptedOutputModes": ["text/markdown", "text/plain"]},
+            "message": {
+                "kind": "message",
+                "role": "user",
+                "taskId": task_id,
+                "contextId": context_id,
+                "messageId": str(uuid.uuid4()),
+                "parts": [{"kind": "text", "text": prompt}],
+            },
+        },
+    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Hermes A2A chat failed with HTTP {error.code}: {detail}") from error
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Hermes A2A chat failed: {error}") from error
+    if isinstance(payload, dict) and payload.get("error"):
+        raise RuntimeError(f"Hermes A2A chat returned JSON-RPC error: {payload['error']}")
+    result = payload.get("result") if isinstance(payload, dict) and "result" in payload else payload
+    if not isinstance(result, dict):
+        raise RuntimeError("Hermes A2A chat returned an invalid response")
+    return result
+
+
+def _send_chat_local_hermes(config: ViewerConfig, *, context_id: str, prompt: str) -> dict[str, Any]:
+    from harness.tools.hermes_a2a_server import HermesA2ARuntime
+
+    runtime = HermesA2ARuntime(
+        profile=config.chat_profile,
+        host="127.0.0.1",
+        port=0,
+        token="",
+        hermes_bin=config.hermes_bin,
+        model=config.chat_model,
+        timeout_seconds=config.chat_timeout_seconds,
+    )
+    return runtime.send_message(
+        {
+            "message": {
+                "kind": "message",
+                "role": "user",
+                "taskId": f"viewer-chat-{uuid.uuid4().hex[:16]}",
+                "contextId": context_id,
+                "messageId": str(uuid.uuid4()),
+                "parts": [{"kind": "text", "text": prompt}],
+            }
+        },
+        native=True,
+    )
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
@@ -927,6 +1404,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def _api_post(self, path: str) -> None:
         try:
+            if path == "/api/chat":
+                payload = self._json_request_body()
+                self._json(send_chat_message(self.config, payload))
+                return
             if path.startswith("/api/requests/") and path.endswith("/resolve"):
                 request_id = unquote(path.removeprefix("/api/requests/").removesuffix("/resolve"))
                 payload = self._json_request_body()
@@ -1032,13 +1513,23 @@ class ViewerServer(ThreadingHTTPServer):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Serve the read-only Hermes hub web viewer.")
+    parser = argparse.ArgumentParser(description="Serve the Hermes hub web viewer.")
     parser.add_argument("--factory", default=os.getenv("HARNESS_FACTORY", "factory"), help="Hermes factory path")
     parser.add_argument("--db", default=None, help="SQLite database path; defaults to <factory>/harness.sqlite3")
     parser.add_argument("--host", default=os.getenv("HARNESS_VIEWER_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("HARNESS_VIEWER_PORT", "8090")))
     parser.add_argument("--access-code", default=os.getenv("HARNESS_VIEWER_ACCESS_CODE"))
     parser.add_argument("--cookie-secret", default=os.getenv("HARNESS_VIEWER_COOKIE_SECRET"))
+    parser.add_argument("--chat-endpoint", default=os.getenv("HARNESS_VIEWER_CHAT_ENDPOINT", ""))
+    parser.add_argument("--chat-token", default=os.getenv("HARNESS_VIEWER_CHAT_TOKEN", ""))
+    parser.add_argument("--chat-profile", default=os.getenv("HARNESS_VIEWER_CHAT_PROFILE", "boss"))
+    parser.add_argument("--hermes-bin", default=os.getenv("HERMES_BIN", str(Path.home() / ".local/bin/hermes")))
+    parser.add_argument("--chat-model", default=os.getenv("HERMES_HARNESS_CODEX_MODEL", "gpt-5.3-codex"))
+    parser.add_argument(
+        "--chat-timeout-seconds",
+        type=int,
+        default=int(os.getenv("HARNESS_VIEWER_CHAT_TIMEOUT_SECONDS", os.getenv("HERMES_A2A_TURN_TIMEOUT_SECONDS", "900"))),
+    )
     return parser
 
 
@@ -1054,6 +1545,12 @@ def main(argv: list[str] | None = None) -> None:
         db_path=db_path,
         access_code=args.access_code,
         cookie_secret=args.cookie_secret or secrets.token_urlsafe(32),
+        chat_endpoint=args.chat_endpoint,
+        chat_token=args.chat_token,
+        chat_profile=args.chat_profile,
+        hermes_bin=args.hermes_bin,
+        chat_model=args.chat_model,
+        chat_timeout_seconds=args.chat_timeout_seconds,
     )
     server = ViewerServer((args.host, args.port), config)
     print(f"Hermes hub viewer listening on http://{args.host}:{args.port}")

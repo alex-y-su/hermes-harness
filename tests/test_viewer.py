@@ -10,7 +10,7 @@ from harness import db
 from harness.models import SubstrateHandle
 from harness.tools import dispatch_team, spawn_team
 from harness.viewer import auth
-from harness.viewer.server import APP_HTML
+from harness.viewer.server import APP_HTML, ViewerConfig, _chat_prompt, send_chat_message
 from harness.viewer.data import (
     _E2B_PROVIDER_CACHE,
     assignment_detail,
@@ -57,12 +57,64 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert "kanban-row" in APP_HTML
     assert "renderTabs" in APP_HTML
     assert "compactGraphText" in APP_HTML
+    assert "Hermes Chat" in APP_HTML
+    assert 'id="chat-window"' in APP_HTML
+    assert 'localStorage.getItem(CHAT_STORAGE_KEY)' in APP_HTML
+    assert 'postApi("/api/chat"' in APP_HTML
+    assert "renderMarkdown" in APP_HTML
     assert 'class="tabs"' in APP_HTML
     assert 'path === "/kanban"' in APP_HTML
     assert 'path === "/resources"' in APP_HTML
     assert 'path === "/schedules"' in APP_HTML
     assert 'path === "/graph"' in APP_HTML
     assert "renderOrgGraphSvg({maxAssignmentsPerTeam: 2" in APP_HTML
+
+
+def test_viewer_chat_prompt_keeps_transcript_context() -> None:
+    prompt = _chat_prompt(
+        [
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+            {"role": "user", "content": "Follow up"},
+        ]
+    )
+    assert "Conversation transcript" in prompt
+    assert "User:\nFirst question" in prompt
+    assert "Assistant:\nFirst answer" in prompt
+    assert "Latest user message:\nFollow up" in prompt
+
+
+def test_viewer_chat_falls_back_to_local_hermes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("HARNESS_VIEWER_CHAT_MANIFEST", raising=False)
+    monkeypatch.delenv("HERMES_A2A_MANIFEST", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    hermes = tmp_path / "hermes"
+    hermes.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "prompt = sys.argv[sys.argv.index('-z') + 1]\n"
+        "print('**fake hermes**\\n\\n' + prompt[-24:])\n",
+        encoding="utf-8",
+    )
+    hermes.chmod(hermes.stat().st_mode | 0o100)
+    factory = tmp_path / "factory"
+    db_path = db.default_db_path(factory)
+    config = ViewerConfig(
+        factory=factory,
+        db_path=db_path,
+        access_code="code",
+        cookie_secret="secret",
+        hermes_bin=str(hermes),
+        chat_model="m",
+        chat_timeout_seconds=10,
+    )
+
+    result = send_chat_message(config, {"messages": [{"role": "user", "content": "hello **world**"}]})
+
+    assert result["transport"] == "local-hermes"
+    assert result["context_id"].startswith("viewer-chat-")
+    assert result["message"]["role"] == "assistant"
+    assert "**fake hermes**" in result["message"]["content"]
 
 
 def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> None:
