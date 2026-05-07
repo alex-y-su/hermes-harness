@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
+import threading
+import urllib.error
+import urllib.request
 from types import SimpleNamespace
 from pathlib import Path
 
 from harness import db
 from harness.models import SubstrateHandle
 from harness.tools import dispatch_team, spawn_team
+from harness.tools import control
 from harness.viewer import auth
-from harness.viewer.server import APP_HTML, ViewerConfig, _chat_prompt, send_chat_message
+from harness.viewer.server import APP_HTML, ViewerConfig, ViewerServer, _chat_prompt, send_chat_message
 from harness.viewer.data import (
     _E2B_PROVIDER_CACHE,
     assignment_detail,
@@ -62,6 +67,14 @@ def test_dashboard_embeds_graph_and_keeps_full_graph_route() -> None:
     assert 'localStorage.getItem(CHAT_STORAGE_KEY)' in APP_HTML
     assert 'postApi("/api/chat"' in APP_HTML
     assert "renderMarkdown" in APP_HTML
+    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in APP_HTML
+    assert "X-Harness-Timezone" in APP_HTML
+    assert "function parseHarnessTime" in APP_HTML
+    assert "function fmtTime" in APP_HTML
+    assert "Times: ${esc(USER_TIME_ZONE)}" in APP_HTML
+    assert "${fmtTime(t.last_event_at, \"never\")}" in APP_HTML
+    assert "${fmtTime(e.ts)}" in APP_HTML
+    assert "${fmtTime(j.next_run_at || \"\")}" in APP_HTML
     assert 'class="tabs"' in APP_HTML
     assert 'path === "/kanban"' in APP_HTML
     assert 'path === "/resources"' in APP_HTML
@@ -115,6 +128,49 @@ def test_viewer_chat_falls_back_to_local_hermes(tmp_path: Path, monkeypatch) -> 
     assert result["context_id"].startswith("viewer-chat-")
     assert result["message"]["role"] == "assistant"
     assert "**fake hermes**" in result["message"]["content"]
+
+
+def test_viewer_exposes_keyed_remote_control_api(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    db_path = db.default_db_path(factory)
+    db.init_db(db_path)
+    server = ViewerServer(
+        ("127.0.0.1", 0),
+        ViewerConfig(
+            factory=factory,
+            db_path=db_path,
+            access_code="browser-code",
+            cookie_secret="secret",
+            control_api_key="control-key",
+        ),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        body = json.dumps({"argv": ["status", "--json"]}).encode("utf-8")
+        request = urllib.request.Request(
+            f"{url}/api/control",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(request, timeout=10)
+        except urllib.error.HTTPError as error:
+            assert error.code == 401
+        else:
+            raise AssertionError("control API should reject missing token")
+
+        result = control.run_remote(
+            control.build_parser().parse_args(["--url", url, "--token", "control-key", "status", "--json"]),
+            ["--url", url, "--token", "control-key", "status", "--json"],
+        )
+        assert result["summary"]["teams"] == 0
+        assert result["summary"]["waiting_on_user"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_viewer_data_reads_factory_and_sqlite(tmp_path: Path, monkeypatch) -> None:

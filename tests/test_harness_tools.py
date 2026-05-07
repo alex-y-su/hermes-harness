@@ -10,6 +10,7 @@ from harness.models import SubstrateHandle
 from harness.tools import (
     ack_alert,
     cancel_assignment,
+    control,
     explain_blockers,
     execution_board,
     orchestrator,
@@ -977,3 +978,136 @@ def test_spawn_team_from_blueprint_directory(tmp_path: Path) -> None:
     metadata = json.loads(row["metadata"])
     assert metadata["template"] == "multi-agent-team"
     assert metadata["blueprint"] == "research"
+
+
+def test_control_cli_observes_logs_and_approves_requests(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "ops"
+    (team_dir / "inbox").mkdir(parents=True)
+    (team_dir / "journal.md").write_text("# Journal\n\n- started\n", encoding="utf-8")
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    inbox_path = team_dir / "inbox" / "asn-control.md"
+    inbox_path.write_text("# Control assignment\n", encoding="utf-8")
+    with db.session(db_path) as conn:
+        db.save_substrate_handle(
+            conn,
+            SubstrateHandle(team_name="ops", substrate="external", handle="http://ops.example/a2a"),
+            status="booted",
+        )
+        db.upsert_assignment(
+            conn,
+            assignment_id="asn-control",
+            team_name="ops",
+            status="working",
+            inbox_path=str(inbox_path),
+            a2a_task_id="task-control",
+        )
+        db.record_event(
+            conn,
+            team_name="ops",
+            assignment_id="asn-control",
+            task_id="task-control",
+            source="test",
+            kind="working",
+            state="working",
+        )
+        db.upsert_execution_ticket(
+            conn,
+            ticket_id="tkt-control",
+            title="Approve control",
+            mode="escalate",
+            team_name="ops",
+            status="blocked",
+            approval_request_id="req-control",
+            assignment_id="asn-control",
+        )
+        db.upsert_approval_request(
+            conn,
+            request_id="req-control",
+            assignment_id="asn-control",
+            team_name="ops",
+            task_id="task-control",
+            kind="approval-required",
+            title="Need approval",
+            prompt="Approve this.",
+        )
+
+    status = control.run(base_args(tmp_path, command="status", team=None, stale_minutes=5, json=True))
+    assert status["summary"]["teams"] == 1
+    assert status["summary"]["waiting_on_user"] == 1
+
+    logs = control.run(
+        base_args(
+            tmp_path,
+            command="logs",
+            team="ops",
+            assignment_id="asn-control",
+            limit=5,
+            tail_lines=10,
+            include_files=True,
+            json=True,
+        )
+    )
+    assert logs["events"][0]["kind"] == "working"
+    assert "started" in logs["journal_tail"]
+    assert "Control assignment" in logs["files"]["inbox_path"]
+
+    approved = control.run(
+        base_args(
+            tmp_path,
+            command="requests",
+            request_command="approve",
+            request_id="req-control",
+            comment="approved by test",
+            continue_work=False,
+            json=True,
+        )
+    )
+    assert approved["request"]["status"] == "supplied"
+    assert approved["request"]["response"]["approved"] is True
+    assert approved["ticket"]["status"] == "completed"
+
+
+def test_control_cli_changes_goals_and_lists_resources(tmp_path: Path) -> None:
+    factory = tmp_path / "factory"
+    team_dir = factory / "teams" / "dev"
+    team_dir.mkdir(parents=True)
+    resource_path = factory / "resources" / "website" / "main.json"
+    resource_path.parent.mkdir(parents=True)
+    resource_path.write_text(
+        json.dumps({"id": "website/main", "title": "Main website", "kind": "website", "state": "ready"}),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "harness.sqlite3"
+    db.init_db(db_path)
+    with db.session(db_path) as conn:
+        db.upsert_execution_ticket(
+            conn,
+            ticket_id="tkt-goal",
+            title="Goal task",
+            mode="patch",
+            team_name="dev",
+            status="ready",
+        )
+
+    changed = control.run(
+        base_args(
+            tmp_path,
+            command="goals",
+            goal_command="set",
+            ticket_id="tkt-goal",
+            goal_id="goal-growth",
+            json=True,
+        )
+    )
+    assert changed["ticket"]["goal_id"] == "goal-growth"
+
+    goals = control.run(base_args(tmp_path, command="goals", goal_command="list", json=True))
+    assert goals["goals"][0]["goal_id"] == "goal-growth"
+    resources = control.run(base_args(tmp_path, command="resources", resource_command="list", json=True))
+    assert resources["resources"][0]["id"] == "website/main"
+    resource = control.run(
+        base_args(tmp_path, command="resources", resource_command="get", resource_id="website/main", json=True)
+    )
+    assert resource["title"] == "Main website"

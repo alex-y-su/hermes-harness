@@ -295,9 +295,39 @@ APP_HTML = r"""<!doctype html>
     let state = { dashboard: null, graph: null };
     let chatState = { open: false, busy: false, contextId: null, messages: [] };
     const CHAT_STORAGE_KEY = "hermes.viewer.chat.v1";
+    const USER_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const timeFormatter = new Intl.DateTimeFormat(undefined, {
+      timeZone: USER_TIME_ZONE,
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short"
+    });
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    function parseHarnessTime(value) {
+      if (!value) return null;
+      const text = String(value).trim();
+      if (!text) return null;
+      let normalized = text;
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) {
+        normalized = text.replace(" ", "T") + "Z";
+      } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) {
+        normalized = text + "Z";
+      }
+      const date = new Date(normalized);
+      if (Number.isNaN(date.getTime())) return null;
+      return date;
+    }
+    function fmtTime(value, fallback = "") {
+      const date = parseHarnessTime(value);
+      if (!date) return esc(value || fallback);
+      return `<time datetime="${esc(date.toISOString())}" title="${esc(String(value))}">${esc(timeFormatter.format(date))}</time>`;
+    }
     async function api(path) {
-      const res = await fetch(path);
+      const res = await fetch(path, {headers: {"X-Harness-Timezone": USER_TIME_ZONE}});
       if (res.status === 401) location.href = "/login";
       if (!res.ok) throw new Error(await res.text());
       return res.json();
@@ -305,7 +335,7 @@ APP_HTML = r"""<!doctype html>
     async function postApi(path, payload) {
       const res = await fetch(path, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: {"Content-Type": "application/json", "X-Harness-Timezone": USER_TIME_ZONE},
         body: JSON.stringify(payload)
       });
       if (res.status === 401) location.href = "/login";
@@ -495,6 +525,7 @@ APP_HTML = r"""<!doctype html>
         <a href="#/schedules" data-route="/schedules">Schedules</a>
         <a href="#/config" data-route="/config">Hub Config</a>
         <a href="#/graph" data-route="/graph">Graph</a>
+        <span class="pill">Times: ${esc(USER_TIME_ZONE)}</span>
         ${(state.dashboard?.hubs || []).map(h => `<a href="${linkFor("hub", h)}">Hub: ${esc(h)}</a>`).join("")}
         <h3>Teams</h3>
         ${teams.map(t => `<a href="${linkFor("team", t.team_name)}">${esc(t.team_name)} <span class="muted">(${esc(t.state)})</span></a>`).join("")}
@@ -562,7 +593,7 @@ APP_HTML = r"""<!doctype html>
           <td class="${Number(t.retrying_assignments || 0) ? "state-working" : "muted"}">${esc(t.retrying_assignments || 0)} retry</td>
           <td class="${Number(t.stale_assignments || 0) ? "state-failed" : "muted"}">${esc(t.stale_assignments || 0)} stale</td>
           <td class="${Number(t.open_user_requests || 0) ? "state-open" : "muted"}">${esc(t.open_user_requests || 0)}</td>
-          <td class="muted">${esc(t.last_event_at || "never")}</td>
+          <td class="muted">${fmtTime(t.last_event_at, "never")}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
@@ -577,7 +608,7 @@ APP_HTML = r"""<!doctype html>
           <td>${esc(t.priority)}</td>
           <td>${t.assignment_id ? esc(t.assignment_id) : ""}</td>
           <td>${esc(t.title)}</td>
-          <td class="muted">${esc(t.updated_at || t.created_at || "")}</td>
+          <td class="muted">${fmtTime(t.updated_at || t.created_at || "")}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
@@ -604,14 +635,14 @@ APP_HTML = r"""<!doctype html>
           <td><a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></td>
           <td>${esc(r.assignment_id || "")}</td>
           <td>${esc(r.title)}</td>
-          <td class="muted">${esc(r.created_at)}</td>
+          <td class="muted">${fmtTime(r.created_at)}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
     function eventTable(events) {
       return `<table><thead><tr><th>Time</th><th>Team</th><th>Kind</th><th>State</th><th>Assignment</th></tr></thead><tbody>
         ${events.map(e => `<tr>
-          <td class="muted">${esc(e.ts)}</td>
+          <td class="muted">${fmtTime(e.ts)}</td>
           <td><a href="${linkFor("team", e.team_name)}">${esc(e.team_name)}</a></td>
           <td>${esc(e.kind)}</td>
           <td class="${statusClass(e.state)}">${esc(e.state || "")}</td>
@@ -630,7 +661,7 @@ APP_HTML = r"""<!doctype html>
           <td>${a.team_name ? `<a href="${linkFor("team", a.team_name)}">${esc(a.team_name)}</a>` : ""}</td>
           <td>${a.assignment_id ? `<a href="${linkFor("assignment", a.assignment_id)}">${esc(a.assignment_id)}</a>` : ""}</td>
           <td>${esc(a.title)}</td>
-          <td class="muted">${esc(a.created_at)}</td>
+          <td class="muted">${fmtTime(a.created_at)}</td>
         </tr>`).join("")}
       </tbody></table>`;
     }
@@ -641,9 +672,9 @@ APP_HTML = r"""<!doctype html>
           <span class="pill ${statusClass(a.status)}">${esc(a.status)}</span>
           <span class="pill"><a href="${linkFor("team", a.team_name)}">${esc(a.team_name)}</a></span>
         </div>
-        <div class="muted">${esc(a.order_id || "no order")} · ${esc(a.created_at || "")}</div>
+        <div class="muted">${esc(a.order_id || "no order")} · ${fmtTime(a.created_at || "")}</div>
         ${a.status_reason ? `<div class="muted">${esc(a.status_reason)}</div>` : ""}
-        ${a.next_retry_at ? `<div class="muted">retry ${esc(a.next_retry_at)}</div>` : ""}
+        ${a.next_retry_at ? `<div class="muted">retry ${fmtTime(a.next_retry_at)}</div>` : ""}
       </article>`;
     }
     function kanbanRequestCard(r) {
@@ -654,7 +685,7 @@ APP_HTML = r"""<!doctype html>
           <span class="pill">${esc(r.kind)}</span>
           <span class="pill"><a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></span>
         </div>
-        <div class="muted">${esc(r.assignment_id || "")} · ${esc(r.created_at || "")}</div>
+        <div class="muted">${esc(r.assignment_id || "")} · ${fmtTime(r.created_at || "")}</div>
       </article>`;
     }
     function kanbanTicketCard(t) {
@@ -824,8 +855,8 @@ APP_HTML = r"""<!doctype html>
           <td><strong>${esc(j.name || j.job_id)}</strong><div class="muted">${esc(j.job_id || "")}</div></td>
           <td class="${j.enabled ? statusClass(j.state) : "state-open"}">${esc(j.enabled ? j.state : "paused")}${j.paused_reason ? `<div class="muted">${esc(j.paused_reason)}</div>` : ""}</td>
           <td>${esc(j.schedule)}</td>
-          <td class="muted">${esc(j.next_run_at || "")}</td>
-          <td class="muted">${esc(j.last_run_at || "")}</td>
+          <td class="muted">${fmtTime(j.next_run_at || "")}</td>
+          <td class="muted">${fmtTime(j.last_run_at || "")}</td>
           <td class="${j.last_status && j.last_status !== "ok" ? "state-failed" : "muted"}">${esc(j.last_status || "")}${j.last_error ? `<div class="state-failed">${esc(j.last_error)}</div>` : ""}</td>
           <td>${esc(j.script || "")}${j.workdir ? `<div class="muted">${esc(j.workdir)}</div>` : ""}</td>
           <td>${j.no_agent ? "script" : "agent"}${j.deliver ? `<div class="muted">${esc(j.deliver)}</div>` : ""}</td>
@@ -835,7 +866,7 @@ APP_HTML = r"""<!doctype html>
     }
     function assignmentTable(rows) {
       return `<table><thead><tr><th>Assignment</th><th>Status</th><th>Created</th><th>Terminal</th></tr></thead><tbody>
-        ${rows.map(a => `<tr><td><a href="${linkFor("assignment", a.assignment_id)}">${esc(a.assignment_id)}</a></td><td class="${statusClass(a.status)}">${esc(a.status)}</td><td class="muted">${esc(a.created_at)}</td><td class="muted">${esc(a.terminal_at || "")}</td></tr>`).join("")}
+        ${rows.map(a => `<tr><td><a href="${linkFor("assignment", a.assignment_id)}">${esc(a.assignment_id)}</a></td><td class="${statusClass(a.status)}">${esc(a.status)}</td><td class="muted">${fmtTime(a.created_at)}</td><td class="muted">${fmtTime(a.terminal_at || "")}</td></tr>`).join("")}
       </tbody></table>`;
     }
     async function renderAssignment(id) {
@@ -887,7 +918,7 @@ APP_HTML = r"""<!doctype html>
       const comment = document.getElementById("approval-comment")?.value || "";
       const res = await fetch(`/api/requests/${encodeURIComponent(id)}/resolve`, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: {"Content-Type": "application/json", "X-Harness-Timezone": USER_TIME_ZONE},
         body: JSON.stringify({action, comment})
       });
       if (res.status === 401) location.href = "/login";
@@ -899,7 +930,7 @@ APP_HTML = r"""<!doctype html>
       const r = await api(`/api/requests/${encodeURIComponent(id)}`);
       app.innerHTML = `<h1>${esc(r.title || r.request_id)}</h1>
         <p><span class="pill ${statusClass(r.status)}">${esc(r.status)}</span> <span class="pill">${esc(r.kind)}</span> <span class="pill">team: <a href="${linkFor("team", r.team_name)}">${esc(r.team_name)}</a></span></p>
-        <p class="muted">${esc(r.request_id)} · ${esc(r.created_at || "")}</p>
+        <p class="muted">${esc(r.request_id)} · ${fmtTime(r.created_at || "")}</p>
         ${r.ticket ? `<p>Ticket: <a href="${linkFor("ticket", r.ticket.ticket_id)}">${esc(r.ticket.ticket_id)}</a></p>` : ""}
         ${r.assignment ? `<p>Assignment: <a href="${linkFor("assignment", r.assignment.assignment_id)}">${esc(r.assignment.assignment_id)}</a></p>` : r.assignment_id ? `<p class="muted">Assignment reference: ${esc(r.assignment_id)}</p>` : ""}
         <h2>Decision Summary</h2>${decisionTable(r.decision || {})}
@@ -1155,6 +1186,7 @@ class ViewerConfig:
         hermes_bin: str = "",
         chat_model: str = "",
         chat_timeout_seconds: int = 900,
+        control_api_key: str = "",
     ) -> None:
         self.factory = factory
         self.db_path = db_path
@@ -1166,6 +1198,7 @@ class ViewerConfig:
         self.hermes_bin = hermes_bin or str(Path.home() / ".local/bin/hermes")
         self.chat_model = chat_model or "gpt-5.3-codex"
         self.chat_timeout_seconds = chat_timeout_seconds
+        self.control_api_key = control_api_key
 
 
 def _chat_endpoint(config: ViewerConfig) -> str:
@@ -1320,7 +1353,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
-            if not self._authenticated():
+            if parsed.path == "/api/control":
+                if not self._control_authenticated():
+                    self._json({"error": "control API key required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
+            elif not self._authenticated():
                 self._json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
                 return
             self._api_post(parsed.path)
@@ -1404,6 +1441,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def _api_post(self, path: str) -> None:
         try:
+            if path == "/api/control":
+                payload = self._json_request_body()
+                self._json(self._run_control(payload))
+                return
             if path == "/api/chat":
                 payload = self._json_request_body()
                 self._json(send_chat_message(self.config, payload))
@@ -1421,6 +1462,20 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _run_control(self, payload: dict[str, Any]) -> dict[str, Any]:
+        argv = payload.get("argv")
+        if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+            raise ValueError("argv must be an array of strings")
+        from harness.tools import control
+
+        args = control.build_parser().parse_args(argv)
+        args.url = ""
+        args.token = ""
+        args.factory = str(self.config.factory)
+        args.db = str(self.config.db_path)
+        result = control.run(args)
+        return {"result": result}
 
     def _json_request_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -1481,6 +1536,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
         morsel = cookie.get(auth.COOKIE_NAME)
         return auth.verify_session(self.config.cookie_secret, morsel.value if morsel else None)
 
+    def _control_authenticated(self) -> bool:
+        key = self.config.control_api_key
+        if not key:
+            return False
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return secrets.compare_digest(auth_header.removeprefix("Bearer ").strip(), key)
+        supplied = self.headers.get("X-Harness-Control-Key", "")
+        return bool(supplied) and secrets.compare_digest(supplied, key)
+
     def _redirect_login(self) -> None:
         if self.path.startswith("/api/"):
             self._json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
@@ -1525,6 +1590,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chat-profile", default=os.getenv("HARNESS_VIEWER_CHAT_PROFILE", "boss"))
     parser.add_argument("--hermes-bin", default=os.getenv("HERMES_BIN", str(Path.home() / ".local/bin/hermes")))
     parser.add_argument("--chat-model", default=os.getenv("HERMES_HARNESS_CODEX_MODEL", "gpt-5.3-codex"))
+    parser.add_argument("--control-api-key", default=os.getenv("HARNESS_CONTROL_API_KEY", ""))
     parser.add_argument(
         "--chat-timeout-seconds",
         type=int,
@@ -1551,6 +1617,7 @@ def main(argv: list[str] | None = None) -> None:
         hermes_bin=args.hermes_bin,
         chat_model=args.chat_model,
         chat_timeout_seconds=args.chat_timeout_seconds,
+        control_api_key=args.control_api_key,
     )
     server = ViewerServer((args.host, args.port), config)
     print(f"Hermes hub viewer listening on http://{args.host}:{args.port}")

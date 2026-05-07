@@ -45,6 +45,7 @@ harness-hermes-a2a-server = "harness.tools.hermes_a2a_server:main"
 harness-notify-user = "harness.tools.notify_user:main"
 harness-message-peer = "harness.tools.message_peer:main"
 harness-list-peers = "harness.tools.list_peers:main"
+harness-control = "harness.tools.control:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
