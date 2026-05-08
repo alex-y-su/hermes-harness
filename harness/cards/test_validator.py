@@ -133,6 +133,21 @@ def main() -> int:
     ]
     results.append(_expect_invalid("subjective_step_rejected", c, ["objective marker"]))
 
+    # Optional resource_dependencies — valid list accepted
+    c = _valid_card_skeleton()
+    c["resource_dependencies"] = ["website/roomcord-com", "social/twitter"]
+    results.append(_expect_valid("resource_dependencies_valid_list", c))
+
+    # Optional resource_dependencies — bad entry rejected
+    c = _valid_card_skeleton()
+    c["resource_dependencies"] = ["WEBSITE/Bad-Format"]
+    results.append(_expect_invalid("resource_dependencies_bad_entry", c, ["resource_dependencies"]))
+
+    # Optional resource_dependencies — empty list rejected
+    c = _valid_card_skeleton()
+    c["resource_dependencies"] = []
+    results.append(_expect_invalid("resource_dependencies_empty_list", c, ["resource_dependencies"]))
+
     # -------- summary --------
     n_pass = sum(1 for r in results if r)
     n_total = len(results)

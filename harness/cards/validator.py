@@ -135,6 +135,22 @@ def validate_card_shape(card: dict) -> None:
             locator_name in early_text,
             f"locator field '{locator_name}' must be referenced by some non-reviewer step's describe_contribution")
 
+    # Optional resource_dependencies — if present, must be a non-empty list of
+    # "<dir>/<name>" strings (e.g., "website/roomcord-com"). Cards that touch
+    # external surfaces are expected to declare them; cards that only produce
+    # internal local state may omit this field.
+    if "resource_dependencies" in card:
+        rd = card.get("resource_dependencies")
+        rd_pattern = re.compile(r"^[a-z][a-z0-9_-]*/[a-z][a-z0-9_.-]*$")
+        req("resource_dependencies",
+            isinstance(rd, list) and len(rd) >= 1,
+            "must be a non-empty list when present")
+        if isinstance(rd, list):
+            for i, dep in enumerate(rd):
+                req(f"resource_dependencies[{i}]",
+                    isinstance(dep, str) and bool(rd_pattern.match(dep or "")),
+                    r"each entry must match ^<dir>/<name>$ (e.g., 'website/roomcord-com')")
+
     if errs:
         raise CardValidationError(errs)
 

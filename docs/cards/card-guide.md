@@ -49,6 +49,34 @@ A card is a unit of work that produces a verifiable artifact. The card declares 
 
 A card is in exactly one of: `queued`, `doing`, `done`, `killed`. There are no other states. Pipeline phase (which step is in flight) is tracked inside the card as `current_step_index`, not as a top-level state.
 
+## Resource dependencies (optional, recommended for external surfaces)
+
+A card may declare which resources it touches via `resource_dependencies`:
+
+```json
+{
+  "resource_dependencies": ["website/roomcord-com", "social/twitter"]
+}
+```
+
+Each entry is the resource id (`<dir>/<name>` form). Cards that touch external surfaces (a real or mocked side-effect skill in their pipeline) **should** declare this; cards that only produce internal local state may omit it.
+
+Before queuing a card, the operator MUST verify each named resource exists at `/factory/resources/<id>.json` and has `state: "ready"`. If any resource is `not_ready` or `archived`, the card is **not queued**. Either pick a different ready surface, or escalate the access ask in propose-and-act format (see `/factory/HARD_RULES.md` envelope rules).
+
+## Resource state vocabulary (3 states only)
+
+A resource has exactly one of three states:
+
+| state | meaning |
+|---|---|
+| `ready` | Skill is wired, credentials present (or mocked), can be used right now. Cards may queue against it. |
+| `not_ready` | Resource declared but cannot be used yet — missing creds, missing skill, awaiting access. Cards must NOT queue. Boss must escalate access in propose-and-act format. |
+| `archived` | Resource is out of scope for the current mission. Don't reference it. |
+
+A resource MUST also carry an **explicit `mock: true | false`** flag — it is the load-bearing safety bit that distinguishes a mocked-side-effect skill (writes to `/factory/mocks/`) from a real-side-effect skill (writes to a real surface). Missing `mock` is a validation error in `resource_validator.py`.
+
+The resource shape is enforced by `/factory/lib/resource_validator.py` (CLI: `python3 /factory/lib/resource_validator.py <path-to-resource.json>`).
+
 ## Examples
 
 ### Example 1 — Real local file artifact (small card)
