@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from harness import db
 from harness.factory import team_path
@@ -28,7 +30,7 @@ def _timestamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-async def run(args: argparse.Namespace) -> dict[str, str]:
+async def run(args: argparse.Namespace) -> dict[str, Any]:
     factory, db_path = paths(args)
     return await finalize_assignment(
         factory=factory,
@@ -49,7 +51,7 @@ async def finalize_assignment(
     terminal_state: str = "completed",
     dry_run: bool = False,
     api_key: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     team_dir = team_path(factory, team)
     with db.session(db_path) as conn:
         row = db.load_assignment_sandbox(conn, assignment_id)
@@ -68,8 +70,10 @@ async def finalize_assignment(
 
     driver = build_driver(handle.substrate, dry_run=should_dry_run, api_key=api_key)
     archive_path = factory / "archive" / "assignment_sandboxes" / f"{team}_{assignment_id}_{_timestamp()}"
+    promoted_outbox: list[str] = []
     if not should_dry_run:
         await driver.sync_out(handle, team_dir)
+        promoted_outbox = _promote_synced_outbox_artifacts(team_dir, team)
         await driver.cancel(handle)
     await driver.archive(handle, archive_path)
 
@@ -83,6 +87,7 @@ async def finalize_assignment(
                 "terminal_state": terminal_state,
                 "handle": asdict(handle),
                 "dry_run": should_dry_run,
+                "promoted_outbox_artifacts": promoted_outbox,
             },
             indent=2,
             sort_keys=True,
@@ -101,7 +106,7 @@ async def finalize_assignment(
             kind="assignment-sandbox-archived",
             state="archived",
             payload_path=str(manifest_path),
-            metadata={"terminal_state": terminal_state, "dry_run": should_dry_run},
+            metadata={"terminal_state": terminal_state, "dry_run": should_dry_run, "promoted_outbox_artifacts": promoted_outbox},
         )
 
     return {
@@ -109,7 +114,35 @@ async def finalize_assignment(
         "assignment_id": assignment_id,
         "status": "archived",
         "archive": str(archive_path),
+        "promoted_outbox_artifacts": promoted_outbox,
     }
+
+
+def _promote_synced_outbox_artifacts(team_dir: Path, team: str) -> list[str]:
+    """Recover artifacts written to sandbox-relative factory paths.
+
+    E2B sync_out copies the sandbox workspace into the hub team directory. If a
+    sandbox writes /home/user/workspace/factory/teams/<team>/outbox/foo, it lands
+    at /factory/teams/<team>/factory/teams/<team>/outbox/foo on the hub. Promote
+    those files to the canonical /factory/teams/<team>/outbox folder so hub tools
+    can process them.
+    """
+    canonical_outbox = team_dir / "outbox"
+    nested_outbox = team_dir / "factory" / "teams" / team / "outbox"
+    if not nested_outbox.exists():
+        return []
+    promoted: list[str] = []
+    for source in sorted(nested_outbox.rglob("*")):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(nested_outbox)
+        target = canonical_outbox / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+            continue
+        shutil.copy2(source, target)
+        promoted.append(str(target))
+    return promoted
 
 
 def main(argv: list[str] | None = None) -> None:

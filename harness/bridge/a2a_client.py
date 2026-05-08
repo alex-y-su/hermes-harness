@@ -91,6 +91,10 @@ class A2AClient:
         endpoint = self._resolve_endpoint(transport, bearer_token)
         return self._json_rpc(endpoint, bearer_token, "tasks/cancel", {"id": task_id})
 
+    def get_task(self, *, transport: dict[str, Any], bearer_token: str, task_id: str) -> Any:
+        endpoint = self._resolve_endpoint(transport, bearer_token)
+        return self._json_rpc(endpoint, bearer_token, "tasks/get", {"id": task_id})
+
     def _resolve_endpoint(self, transport: dict[str, Any], bearer_token: str) -> str:
         direct = transport.get("endpoint_url") or transport.get("a2a_url")
         if direct:

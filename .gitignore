@@ -31,9 +31,14 @@ htmlcov/
 *.db-wal
 factory/
 archive/
+local-analysis/
 
 # Local secrets
 .env
 .env.*
+.bridge.env
+.control*.env
+.roomcord.env
+.viewer.env
 secrets/
 credentials/

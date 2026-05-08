@@ -85,9 +85,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ticket_columns = {name: [] for name in COLUMNS}
     for ticket in tickets:
         status = str(ticket["status"])
-        if status == "ready":
+        if status in {"ready", "queued"}:
             target = "queued"
-        elif status in {"queued", "working"}:
+        elif status == "working":
             target = "running"
         elif status == "blocked":
             target = "waiting_on_user"

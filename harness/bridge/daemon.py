@@ -13,7 +13,7 @@ from harness.bridge.a2a_client import A2AClient
 from harness.bridge.cancel import cancel_team
 from harness.bridge.dispatch import dispatch_assignment
 from harness.bridge.fs_contract import discover_teams, ensure_dir, utc_now, write_json
-from harness.bridge.push import process_push
+from harness.bridge.push import artifact_name, artifact_text, process_push
 from harness.bridge.secrets import SecretResolver
 from harness.bridge.store import BridgeDb
 
@@ -148,6 +148,78 @@ class BridgeDaemon:
                 )
             finally:
                 self.in_progress.discard(path)
+        self.poll_external_team(team_name, team_dir)
+
+    def poll_external_team(self, team_name: str, team_dir: Path) -> None:
+        transport = _read_transport(team_dir)
+        if not transport or transport.get("substrate") == "e2b" or not transport.get("agent_card_url"):
+            return
+        bearer_token = self.secrets.resolve(transport.get("team_bearer_token_ref"))
+        if not bearer_token:
+            return
+        for assignment in self.db.active_assignments(team_name):
+            task_id = assignment["a2a_task_id"]
+            if not task_id:
+                continue
+            try:
+                task = self.a2a_client.get_task(transport=transport, bearer_token=bearer_token, task_id=task_id)
+            except Exception as error:
+                self.db.append_event(
+                    team_name=team_name,
+                    assignment_id=assignment["assignment_id"],
+                    task_id=task_id,
+                    source="a2a-poll",
+                    kind="poll-error",
+                    state="failed",
+                    metadata={"error": str(error)},
+                )
+                continue
+            self._ingest_polled_task(team_name, team_dir, assignment["assignment_id"], task_id, task)
+
+    def _ingest_polled_task(self, team_name: str, team_dir: Path, assignment_id: str, task_id: str, task: dict[str, Any]) -> None:
+        status = task.get("status") if isinstance(task.get("status"), dict) else {}
+        state = str(status.get("state") or task.get("state") or "")
+        if not state:
+            return
+        inserted = self.db.append_event(
+            team_name=team_name,
+            assignment_id=assignment_id,
+            task_id=task_id,
+            source="a2a-poll",
+            kind="poll",
+            state=state,
+            metadata={"task_kind": task.get("kind")},
+        )
+        if not inserted["inserted"]:
+            return
+        write_json(
+            team_dir / "status.json",
+            {
+                "team_name": team_name,
+                "task_id": task_id,
+                "assignment_id": assignment_id,
+                "state": state,
+                "source": "a2a-poll",
+                "updated_at": utc_now(),
+                "message": status.get("message"),
+            },
+        )
+        if state == "working":
+            self.db.mark_assignment_heartbeat(assignment_id=assignment_id, status="working")
+            return
+        if state == "completed":
+            outbox = ensure_dir(team_dir / "outbox")
+            artifacts = task.get("artifacts") or [{"name": f"{assignment_id}.result.md", "text": _status_message_text(status) or ""}]
+            written: list[Path] = []
+            for index, artifact in enumerate(artifacts):
+                path = outbox / artifact_name(artifact, index)
+                path.write_text(artifact_text(artifact), encoding="utf-8")
+                written.append(path)
+            self.db.mark_terminal(assignment_id=assignment_id, status="completed", completed_path=written[0] if written else None)
+            self.db.release_lease(resource_type="assignment", resource_id=assignment_id)
+        elif state in {"failed", "canceled"}:
+            self.db.mark_terminal(assignment_id=assignment_id, status=state)
+            self.db.release_lease(resource_type="assignment", resource_id=assignment_id)
 
     def _run_loop(self) -> None:
         next_heartbeat = 0.0
@@ -200,6 +272,28 @@ class BridgeDaemon:
                 self.wfile.write(payload)
 
         return PushHandler
+
+
+def _read_transport(team_dir: Path) -> dict[str, Any]:
+    try:
+        return json.loads((team_dir / "transport.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _status_message_text(status: dict[str, Any]) -> str | None:
+    message = status.get("message")
+    if isinstance(message, dict):
+        parts = message.get("parts")
+        if isinstance(parts, list):
+            rendered = []
+            for part in parts:
+                if isinstance(part, dict) and part.get("text") is not None:
+                    rendered.append(str(part["text"]))
+            return "\n".join(rendered) or None
+    if isinstance(message, str):
+        return message
+    return None
 
 
 def install_signal_handlers(daemon: BridgeDaemon, db: BridgeDb) -> None:

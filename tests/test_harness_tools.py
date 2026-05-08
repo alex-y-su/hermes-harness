@@ -22,11 +22,13 @@ from harness.tools import (
     query_user_requests,
     query_work_board,
     requeue_assignment,
+    resource_actions,
     resolve_user_request,
     dispatch_team,
     spawn_team,
     sunset_team,
 )
+from harness.tools.finalize_assignment_sandbox import _promote_synced_outbox_artifacts
 from harness.tools.run_assignment_sandbox import run_for_assignment
 
 
@@ -288,6 +290,224 @@ def test_resource_gate_cooldown_quiet_hours_and_cards(tmp_path: Path):
     assert gated["decision"]["reason"] == "cooldown"
 
 
+def test_resource_actions_approves_executes_and_commits_card(tmp_path: Path):
+    factory = tmp_path / "factory"
+    resource = factory / "resources" / "website" / "main.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text(
+        json.dumps(
+            {
+                "id": "website/main",
+                "title": "Main website",
+                "kind": "website",
+                "state": "ready",
+                "owner": "dev",
+                "approval_policy": "publishing requires explicit approval",
+                "execution": {
+                    "actions": {
+                        "publish_site": {
+                            "hub_skill": "test-publish",
+                            "location": "hub-main-machine",
+                        }
+                    }
+                },
+                "usage_policy": {
+                    "actions": {
+                        "publish_site": {
+                            "max_per_24h": 2,
+                            "requires_approval": True,
+                            "reservation_ttl_minutes": 60,
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    skill = factory / "skills" / "test-publish" / "execute.sh"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf 'executed %s %s\\n' \"$HARNESS_RESOURCE_ID\" \"$HARNESS_RESOURCE_ACTION\"\n"
+        "printf 'external_ref=test://publish/%s\\n' \"$HARNESS_RESOURCE_TICKET_ID\"\n",
+        encoding="utf-8",
+    )
+    skill.chmod(0o755)
+    db.init_db(tmp_path / "harness.sqlite3")
+    with db.session(tmp_path / "harness.sqlite3") as conn:
+        db.upsert_execution_ticket(
+            conn,
+            ticket_id="tkt-publish",
+            title="Publish site",
+            mode="patch",
+            team_name="dev",
+            status="ready",
+        )
+    card = resource_gate.run(
+        base_args(
+            tmp_path,
+            command="card",
+            card_command="create",
+            resource="website/main",
+            action="publish_site",
+            ticket_id="tkt-publish",
+            team="dev",
+            artifact="/factory/teams/dev/outbox/site.patch",
+            why="ship approved page",
+            title=None,
+            metadata=json.dumps({"blast_radius": "public website", "rollback": "revert commit"}),
+            json=True,
+        )
+    )
+
+    first = resource_actions.run(base_args(tmp_path, command="process", limit=10, no_execute=False, loop=False, poll_seconds=30, holder=None, json=True))
+    assert first["processed"][0]["status"] == "approval-required"
+    with db.session(tmp_path / "harness.sqlite3") as conn:
+        request = conn.execute("SELECT * FROM approval_requests").fetchone()
+        assert request is not None
+        assert request["kind"] == "approval-required"
+        assert "hub-side resource action" in request["prompt"]
+        ticket = db.get_execution_ticket(conn, "tkt-publish")
+        assert ticket["status"] == "blocked"
+        db.resolve_approval_request(
+            conn,
+            request_id=request["request_id"],
+            status="supplied",
+            response={"approved": True, "decision": "approved"},
+        )
+
+    second = resource_actions.run(base_args(tmp_path, command="process", limit=10, no_execute=False, loop=False, poll_seconds=30, holder=None, json=True))
+    statuses = [item["status"] for item in second["processed"]]
+    assert statuses == ["ready", "completed"]
+    completed = factory / "resource_action_cards" / "completed" / f"{card['card']['card_id']}.json"
+    assert completed.exists()
+    saved = json.loads(completed.read_text())
+    assert saved["execution"]["external_ref"] == "test://publish/tkt-publish"
+    ledger = factory / "resource_usage" / "website" / "main.jsonl"
+    assert any(json.loads(line)["status"] == "committed" for line in ledger.read_text().splitlines())
+    with db.session(tmp_path / "harness.sqlite3") as conn:
+        ticket = db.get_execution_ticket(conn, "tkt-publish")
+        assert ticket["status"] == "completed"
+
+
+def test_resource_actions_needs_human_when_skill_missing(tmp_path: Path):
+    factory = tmp_path / "factory"
+    resource = factory / "resources" / "website" / "main.json"
+    resource.parent.mkdir(parents=True)
+    resource.write_text(
+        json.dumps(
+            {
+                "id": "website/main",
+                "state": "ready",
+                "execution": {"actions": {"publish_site": {"hub_skill": "missing-skill", "location": "hub-main-machine"}}},
+                "usage_policy": {"actions": {"publish_site": {"requires_approval": False}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    db.init_db(tmp_path / "harness.sqlite3")
+    with db.session(tmp_path / "harness.sqlite3") as conn:
+        db.upsert_execution_ticket(conn, ticket_id="tkt-missing", title="Publish site", mode="patch", team_name="dev", status="ready")
+    resource_gate.run(
+        base_args(
+            tmp_path,
+            command="card",
+            card_command="create",
+            resource="website/main",
+            action="publish_site",
+            ticket_id="tkt-missing",
+            team="dev",
+            artifact="/tmp/artifact",
+            why="test",
+            title=None,
+            metadata=None,
+            json=True,
+        )
+    )
+
+    result = resource_actions.run(base_args(tmp_path, command="process", limit=10, no_execute=False, loop=False, poll_seconds=30, holder=None, json=True))
+    assert [item["status"] for item in result["processed"]] == ["ready", "needs-human"]
+    assert (factory / "resource_action_cards" / "needs-human").exists()
+    with db.session(tmp_path / "harness.sqlite3") as conn:
+        alert = conn.execute("SELECT * FROM operator_alerts WHERE kind = 'resource-action-needs-human'").fetchone()
+        assert alert is not None
+        ticket = db.get_execution_ticket(conn, "tkt-missing")
+        assert ticket["status"] == "blocked"
+
+
+def test_resource_actions_harvests_outbox_json_card(tmp_path: Path):
+    factory = tmp_path / "factory"
+    outbox = factory / "teams" / "dev" / "outbox"
+    outbox.mkdir(parents=True)
+    artifact = outbox / "site.patch"
+    artifact.write_text("patch", encoding="utf-8")
+    (outbox / "publish.resource-action.json").write_text(
+        json.dumps(
+            {
+                "ticket_id": "tkt-harvest",
+                "resource_id": "website/main",
+                "action": "publish_site",
+                "artifact": str(artifact),
+                "why": "publish approved patch",
+                "title": "Publish main website",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    harvested = resource_actions.harvest_cards(factory)
+    assert len(harvested) == 1
+    assert (factory / "resource_action_cards" / "pending" / "tkt-harvest__website-main__publish_site.json").exists()
+    assert resource_actions.harvest_cards(factory) == []
+
+
+def test_resource_actions_harvests_nested_synced_outbox_json_card(tmp_path: Path):
+    factory = tmp_path / "factory"
+    outbox = factory / "teams" / "dev" / "factory" / "teams" / "dev" / "outbox"
+    outbox.mkdir(parents=True)
+    artifact = outbox / "site.patch"
+    artifact.write_text("patch", encoding="utf-8")
+    (outbox / "publish.resource-action.json").write_text(
+        json.dumps(
+            {
+                "ticket_id": "tkt-harvest-nested",
+                "resource_id": "website/main",
+                "action": "publish_site",
+                "artifact": str(artifact),
+                "why": "publish approved patch",
+                "title": "Publish main website",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    harvested = resource_actions.harvest_cards(factory)
+    assert len(harvested) == 1
+    card = json.loads((factory / "resource_action_cards" / "pending" / "tkt-harvest-nested__website-main__publish_site.json").read_text())
+    assert card["team"] == "dev"
+    assert resource_actions.harvest_cards(factory) == []
+
+
+def test_finalize_assignment_promotes_nested_synced_outbox_artifacts(tmp_path: Path):
+    team_dir = tmp_path / "factory" / "teams" / "dev"
+    nested = team_dir / "factory" / "teams" / "dev" / "outbox"
+    nested.mkdir(parents=True)
+    (nested / "publish.resource-action.json").write_text('{"ok": true}', encoding="utf-8")
+    patch = nested / "patches" / "site.patch"
+    patch.parent.mkdir()
+    patch.write_text("patch", encoding="utf-8")
+
+    promoted = _promote_synced_outbox_artifacts(team_dir, "dev")
+
+    assert sorted(Path(path).relative_to(team_dir / "outbox").as_posix() for path in promoted) == [
+        "patches/site.patch",
+        "publish.resource-action.json",
+    ]
+    assert (team_dir / "outbox" / "publish.resource-action.json").read_text(encoding="utf-8") == '{"ok": true}'
+    assert (team_dir / "outbox" / "patches" / "site.patch").read_text(encoding="utf-8") == "patch"
+
+
 def test_spawn_dispatch_query_and_sunset_external(tmp_path: Path):
     spawn_result = asyncio.run(
         spawn_team.run(
@@ -443,7 +663,8 @@ def test_execution_board_dispatch_sync_and_block(tmp_path: Path):
     ticked = execution_board.run(base_args(tmp_path, command="tick", limit=5, json=True))
     assert ticked["dispatched"][0]["assignment_id"] == "tkt-ship-patch"
     board = query_work_board.run(base_args(tmp_path, team=None, json=True))
-    assert board["execution_ticket_counts"]["running"] == 1
+    assert board["execution_ticket_counts"]["queued"] == 1
+    assert board["execution_ticket_counts"]["running"] == 0
 
     with db.session(Path(tmp_path / "harness.sqlite3")) as conn:
         conn.execute("UPDATE team_assignments SET status = 'completed' WHERE assignment_id = 'tkt-ship-patch'")

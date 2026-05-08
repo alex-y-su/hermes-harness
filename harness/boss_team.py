@@ -279,6 +279,10 @@ requests approval when needed, and executes approved actions through the
 resource's configured `execution.skill` from `factory/skills/`. Deterministic
 code owns policy, reservations, approvals, and usage logging; channel-specific
 social/API/browser workflows belong in skills, not hardcoded adapters.
+
+The hub resource manager is the `harness-resource-actions` processor. It runs
+continuously on native installs as `hermes-resource-actions.service` and can be
+invoked manually with `harness-control resource-actions process`.
 """,
 }
 
@@ -462,8 +466,9 @@ Rules:
 3. Ensure the artifact exists under the requesting team's outbox.
 4. Create a card:
    python3 -m harness.tools.resource_gate card create --factory /factory --resource <id> --action <action> --ticket-id <ticket> --team <team> --artifact <artifact> --why <reason> --json
-5. Return the card path and the artifact path.
-6. If the resource is missing, needs-access, blocked, or has no usage policy, create resource-readiness work instead of a publish/post approval.
+5. If running inside an isolated remote workspace where /factory is not the hub factory, write an outbox JSON artifact named `<ticket-id>.resource-action.json` with `resource_id`, `action`, `ticket_id`, `team`, `artifact`, `why`, `title`, and optional `metadata`; the hub processor will harvest it.
+6. Return the card path or outbox JSON path and the artifact path.
+7. If the resource is missing, needs-access, blocked, or has no usage policy, create resource-readiness work instead of a publish/post approval.
 """,
     "hub-resource-manager": """# hub-resource-manager
 Process resource action cards on the hub machine.
@@ -481,6 +486,7 @@ Steps:
 5. If ready and approved, read resource.execution.skill and invoke that skill from the hub/main-machine context.
 6. After success, run resource_gate commit with external_ref/evidence.
 7. If canceled or denied, run resource_gate release.
+8. If no executable hub skill exists, move the card to needs-human and keep the ticket blocked.
 
 Never add deterministic per-channel adapters to the harness for routine social,
 browser, or API workflows. Those workflows belong in resource action skills.

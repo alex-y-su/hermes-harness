@@ -19,7 +19,7 @@ from harness.tools.common import add_factory_args, paths
 COUNTED_STATUSES = {"committed", "failed_counted"}
 RESERVED_STATUS = "reserved"
 RELEASED_STATUSES = {"released", "failed_uncommitted"}
-CARD_STATES = {"pending", "ready", "approval-required", "blocked", "completed", "released", "failed"}
+CARD_STATES = {"pending", "ready", "approval-required", "blocked", "completed", "released", "failed", "needs-human"}
 
 
 @dataclass(frozen=True)
@@ -421,9 +421,10 @@ def _action_policy(resource: dict[str, Any], action: str) -> dict[str, Any] | No
     if not isinstance(usage_policy, dict):
         return None
     actions = usage_policy.get("actions")
-    if not isinstance(actions, dict):
-        return None
-    policy = actions.get(action)
+    if isinstance(actions, dict):
+        policy = actions.get(action)
+        return policy if isinstance(policy, dict) else None
+    policy = usage_policy.get(action)
     return policy if isinstance(policy, dict) else None
 
 

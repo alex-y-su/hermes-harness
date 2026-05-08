@@ -102,12 +102,46 @@ python3 -m harness.tools.resource_gate card create \
   --json
 ```
 
+If a remote team is running in an isolated workspace and cannot write the hub
+factory queue directly, it should write an outbox artifact named
+`<ticket-id>.resource-action.json` containing:
+
+```json
+{
+  "ticket_id": "tkt-123",
+  "team": "brand",
+  "resource_id": "social/x-main",
+  "action": "post_public",
+  "artifact": "outbox/tkt-123-post.md",
+  "why": "test onboarding copy angle",
+  "title": "Post approved X launch copy",
+  "metadata": {
+    "blast_radius": "public social post",
+    "rollback": "delete post if incorrect"
+  }
+}
+```
+
+The hub processor harvests this file into `factory/resource_action_cards/pending/`.
+
 The hub-side resource manager gates cards, requests approval when needed, then
 uses the resource's configured skill from `factory/skills/` to perform the
 approved action from the main machine or configured proxy. The harness should not
 grow one deterministic adapter per social network. Deterministic code owns
 policy, reservation, approval state, and usage logging; channel-specific
 operation belongs in skills.
+
+Run the hub-side processor with:
+
+```bash
+python3 -m harness.tools.resource_actions --factory /factory --db /factory/harness.sqlite3 process --loop
+```
+
+or through the consolidated control CLI:
+
+```bash
+harness-control resource-actions process
+```
 
 Resource execution config:
 
@@ -130,5 +164,10 @@ File-backed runtime state:
 
 - `factory/resource_usage/<resource-id>.jsonl`: append-only usage ledger.
 - `factory/resource_gate_decisions/<date>/*.json`: deterministic gate decisions.
-- `factory/resource_action_cards/{pending,ready,approval-required,blocked,completed,released,failed}/`: hub-side action queue.
+- `factory/resource_action_cards/{pending,ready,approval-required,blocked,completed,released,failed,needs-human}/`: hub-side action queue.
 - `factory/locks/resources/*.lock`: atomic reservation locks.
+
+The processor only executes actions that declare a hub-side skill/command in the
+resource file, for example `execution.actions.<action>.hub_skill`. If no
+executable skill exists under `factory/skills/<skill>/`, the card moves to
+`needs-human` and the related ticket stays blocked instead of being marked done.

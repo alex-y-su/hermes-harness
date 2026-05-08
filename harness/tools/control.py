@@ -22,6 +22,7 @@ from harness.tools import (
     query_user_requests,
     query_work_board,
     requeue_assignment,
+    resource_actions,
     resolve_user_request,
 )
 from harness.tools.common import add_factory_args, paths
@@ -194,6 +195,17 @@ def build_parser() -> argparse.ArgumentParser:
     resource_sub.add_parser("list", parents=[base], help="List resource summaries from the dashboard.")
     resource_get = resource_sub.add_parser("get", parents=[base], help="Inspect one resource.")
     resource_get.add_argument("resource_id")
+
+    actions = sub.add_parser("resource-actions", help="Process hub-side resource action cards.")
+    action_sub = actions.add_subparsers(dest="resource_action_command", required=True)
+    action_list = action_sub.add_parser("list", parents=[base], help="List resource action cards.")
+    action_list.add_argument("--state", default="active")
+    action_get = action_sub.add_parser("get", parents=[base], help="Inspect one resource action card.")
+    action_get.add_argument("card")
+    action_process = action_sub.add_parser("process", parents=[base], help="Gate, approve, and execute cards.")
+    action_process.add_argument("--limit", type=int, default=20)
+    action_process.add_argument("--no-execute", action="store_true")
+    action_process.add_argument("--holder", default=None)
 
     sub.add_parser("graph", parents=[base], help="Return org graph nodes and edges.")
     sub.add_parser("schedules", parents=[base], help="Return Hermes cron schedules.")
@@ -602,6 +614,27 @@ def _run_resources(args: argparse.Namespace) -> dict[str, Any]:
     raise SystemExit(f"unknown resources command: {args.resource_command}")
 
 
+def _run_resource_actions(args: argparse.Namespace) -> dict[str, Any]:
+    command = args.resource_action_command
+    if command == "list":
+        return resource_actions.run(_ns(args, command="list", state=args.state))
+    if command == "get":
+        return resource_actions.run(_ns(args, command="get", card=args.card))
+    if command == "process":
+        return resource_actions.run(
+            _ns(
+                args,
+                command="process",
+                loop=False,
+                poll_seconds=30,
+                limit=args.limit,
+                no_execute=args.no_execute,
+                holder=args.holder,
+            )
+        )
+    raise SystemExit(f"unknown resource-actions command: {command}")
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "dashboard":
         return _run_dashboard(args)
@@ -634,6 +667,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return _run_watchdog(args)
     if args.command == "resources":
         return _run_resources(args)
+    if args.command == "resource-actions":
+        return _run_resource_actions(args)
     if args.command == "graph":
         factory, db_path = paths(args)
         return graph(factory, db_path)
@@ -761,6 +796,10 @@ def _print_text(args: argparse.Namespace, result: dict[str, Any]) -> None:
     if args.command == "resources" and args.resource_command == "list":
         for resource in result["resources"]:
             print(f"{resource.get('id')}: {resource.get('state')} {resource.get('kind')} {resource.get('title')}")
+        return
+    if args.command == "resource-actions" and args.resource_action_command == "list":
+        for card in result["cards"]:
+            print(f"{card.get('card_id')}: {card.get('status')} {card.get('resource_id')} {card.get('action')}")
         return
     if args.command == "goals" and args.goal_command == "list":
         for goal in result["goals"]:

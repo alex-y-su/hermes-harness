@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from harness import db as harness_db
+from harness.bridge.daemon import BridgeDaemon
 from harness.bridge.dispatch import dispatch_assignment
 from harness.bridge.hmac import canonical_json, sign_push, verify_push_signature
 from harness.bridge.push import process_push
@@ -171,6 +172,32 @@ def test_completed_push_writes_sanitized_artifact(tmp_path: Path) -> None:
     assert result["status"] == 202
     assert (team_dir / "outbox" / "result_.md").read_text(encoding="utf-8") == "done"
     assert db.get_assignment("assign-1")["status"] == "completed"
+    db.close()
+
+
+def test_external_a2a_poll_fallback_completes_assignment(tmp_path: Path) -> None:
+    factory_dir, team_dir, db, secrets = setup_bridge(tmp_path)
+    transport = json.loads((team_dir / "transport.json").read_text(encoding="utf-8"))
+    transport["substrate"] = "external"
+    transport["agent_card_url"] = "https://external.example/.well-known/agent-card.json"
+    (team_dir / "transport.json").write_text(json.dumps(transport), encoding="utf-8")
+    db.ensure_assignment(assignment_id="assign-1", team_name="dev", inbox_path=team_dir / "inbox" / "assign-1.md")
+    db.mark_dispatched(assignment_id="assign-1", task_id="task-1", in_flight_path=team_dir / "inbox" / "assign-1.in-flight.md")
+
+    class StubClient:
+        def get_task(self, **kwargs):
+            return {
+                "id": "task-1",
+                "kind": "task",
+                "status": {"state": "completed", "message": {"parts": [{"kind": "text", "text": "done"}]}},
+                "artifacts": [{"name": "response", "parts": [{"kind": "text", "text": "done"}]}],
+            }
+
+    daemon = BridgeDaemon(factory_dir=factory_dir, db=db, secrets=secrets, a2a_client=StubClient())
+    daemon.poll_external_team("dev", team_dir)
+
+    assert db.get_assignment("assign-1")["status"] == "completed"
+    assert (team_dir / "outbox" / "response").read_text(encoding="utf-8") == "done"
     db.close()
 
 
