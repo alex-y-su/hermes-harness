@@ -110,20 +110,37 @@ After Step E, check whether the user has replied:
 2. Pick the OLDEST unprocessed message by filename UTC timestamp (one per pulse — same one-step rule as cards).
 3. Read the message body.
 4. Read all `/factory/approvals/*.json` with `status="pending"` and all `/factory/access-requests/*.json` with `status="pending"` to build the candidate-action set.
-5. Use LLM judgment to parse the user's intent into one or more of:
+5. **Mandatory deterministic pre-pass (run before LLM judgment):** scan the body line by line. If a line matches any of the literal forms below, that intent is recognized with confidence 1.0 and dispatched immediately. ONLY use LLM judgment for lines that don't match a literal form.
+
+   Literal forms (case-insensitive, leading/trailing whitespace stripped):
+   - `approve <appr-id>` (e.g. `approve appr-20260508T215212Z-4fb0`) → intent=approve, target=appr-id
+   - `approve <appr-id>: <note>` → intent=approve, target=appr-id, decision_note=note
+   - `reject <appr-id>` → intent=reject, target=appr-id
+   - `reject <appr-id>: <note>` → intent=reject, target=appr-id, decision_note=note
+   - `edit <appr-id>: <new payload text>` → intent=edit-and-approve, target=appr-id, payload_override.text=new text
+   - `grant <accr-id>` → intent=grant, target=accr-id (boss-team must still verify the secrets file exists before invoking grant-access)
+   - `deny <accr-id>` → intent=deny, target=accr-id
+   - `creds installed` (no id) → intent=grant-all-pending — boss-team scans /factory/access-requests/ for any pending request, verifies each one's secrets file, and grants the ones that pass
+
+   Where `<appr-id>` matches `appr-\d{8}T\d{6}Z-[0-9a-f]{4}` and `<accr-id>` matches `accr-\d{8}T\d{6}Z-[0-9a-f]{4}`.
+
+   If a body contains multiple literal-form lines, dispatch all of them in order. Bodies that mix literal forms with free-form text (e.g., "approve appr-XXX. by the way the second one was perfect, keep that style.") use the literal form for action and the free-form remainder for context (logged in audit, not actioned).
+
+   Only fall through to LLM judgment for bodies that contain ZERO literal-form lines (e.g., "approve the prayer-circle tweet" — fuzzy match to the appr-id where payload best matches "prayer-circle tweet").
+6. Use LLM judgment to parse the user's intent into one or more of:
    - **approve** an approval — by id, or by fuzzy match (e.g., "the prayer circle tweet" → match payload text).
    - **reject** an approval.
    - **grant** an access-request — only AFTER verifying the secrets file exists at `/factory/secrets/<resource_with_dash>.json` and is `chmod 600`. NEVER read secret values into pulse output.
    - **deny** an access-request.
    - **edit-and-approve**: user wants to tweak before approving. Apply the edit to the approval payload (update `/factory/approvals/<id>.json` in place via atomic-rename, append audit-trail entry `{"event": "edited", ...}`), then approve.
    - **none**: free-form chat with no actionable intent — just acknowledge in audit.
-6. For each parsed intent, invoke the corresponding skill:
+7. For each parsed intent, invoke the corresponding skill:
    - approve → `/factory/skills/approve-action/execute.sh` with env `APPROVAL_ID=<id>` and `DECISION_NOTE=<text>`.
    - reject → `/factory/skills/reject-action/execute.sh` with env `APPROVAL_ID=<id>` and `DECISION_NOTE=<text>`.
    - grant → `/factory/skills/grant-access/execute.sh` with env `REQUEST_ID=<id>`.
    Capture each skill's stdout JSON.
-7. Move the inbox file to `/factory/inbox/processed/<same-name>.md` via atomic rename (`os.rename`).
-8. Write audit at `/factory/reviews/inbox-<utc-iso>-<short>.json` (atomic-rename) containing:
+8. Move the inbox file to `/factory/inbox/processed/<same-name>.md` via atomic rename (`os.rename`).
+9. Write audit at `/factory/reviews/inbox-<utc-iso>-<short>.json` (atomic-rename) containing:
    - `inbox_message_path`: the processed/ path
    - `original_body`: the verbatim message text
    - `parsed_intents`: list of `{intent, target_id, confidence, rationale}`
