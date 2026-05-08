@@ -8,10 +8,14 @@ Read `/factory/GOAL.md`, `/factory/HARD_RULES.md`, `/factory/CARD_GUIDE.md`, `/f
 
 ### Step A — pick a card
 
+**Always check in this exact order. The first match wins.**
+
 1. Load `/factory/board.json`.
-2. Find the highest-priority card with `status="queued"` whose `depends_on` (if any) points to a card with `status="done"`.
-3. If a `doing` card is in flight (some prior pulse left a card mid-pipeline), prefer it over picking a new queued card. Resume it at `current_step_index`.
-4. If no card is ready, go to Step E (idle / restructure).
+2. **First priority — resume any in-flight `doing` card.** Iterate cards. If any card has `status="doing"` and `current_step_index < len(pipeline)`, that is the card to advance THIS pulse. Use it as `T` and skip to Step B. Do not consider queued cards or restructure work in this pulse — finish what's already in flight before starting new work.
+3. **Second priority — pick the highest-priority queued card whose deps are met.** Find the card with `status="queued"`, highest `priority`, whose `depends_on` is either null or points to a card with `status="done"`. If found, that is `T`. Skip to Step B.
+4. **Otherwise — idle / restructure.** Go to Step E.
+
+This ordering is **load-bearing**: if you skip step 2 and go straight to drafting a new card, an in-flight card stalls forever. The pulse is wasted. Always finish in-flight work first.
 
 ### Step B — verify resource_dependencies
 
@@ -46,12 +50,17 @@ If the step's `role == "reviewer"`:
 
 If `/factory/skills/<role>/execute.sh` exists, the role is a side-effect skill:
 
-1. Invoke that skill with `TASK_INPUT=<json of T.input merged with what the role needs>` and `TASK_ID=<T.id>`.
-2. Parse stdout JSON.
-3. On `success=true`: write the skill output into `T.contributions[<role>]` and merge any `result.<key>` fields from skill output into `T.result`. Increment `T.current_step_index`. Persist board. End pulse.
-4. On `success=false`: increment `T.retry_count`. If `T.retry_count >= T.max_retries`, set `T.status="killed"` with `T.result.kill_reason="skill_failed:<role>"`. Otherwise leave `T.status="queued"` to retry next pulse. Persist board. End pulse.
+1. Invoke that skill with `TASK_INPUT=<json of T.input>` and `TASK_ID=<T.id>`.
+2. Parse stdout JSON. The skill returns a single-line JSON object with at least `success: bool`. On success it returns additional output keys (e.g., the `publish-website-page` skill returns `live_url`, `commit`, `page_path`; the `post-twitter` skill returns `tweet_id`, `feed_path`, etc.).
+3. On `success=true`:
+   - Write the **entire skill output JSON** (minus the `success` and `error` keys) into `T.contributions[<role>]` for audit.
+   - **Merge every top-level key from the skill output (except `success` and `error`) into `T.result` with the same key name.** Example: skill stdout `{"success": true, "live_url": "https://...", "commit": "abc123"}` → after this step, `T.result["live_url"] = "https://..."` and `T.result["commit"] = "abc123"`. This is how the locator field gets populated.
+   - Increment `T.current_step_index`. Persist board with atomic-rename. End pulse.
+4. On `success=false`: increment `T.retry_count`. If `T.retry_count >= T.max_retries`, set `T.status="killed"` with `T.result.kill_reason="skill_failed:<role>"`. Otherwise revert `T.status="queued"` so the next pulse retries this same step. Persist board. End pulse.
 
-Examples of skill-named roles already in `/factory/skills/`: `publish-website-page` (real), `post-twitter` (mock), `send-email` (mock).
+**Hard rule on result merging**: the locator field declared in `T.outcome.locator_field` (e.g., `result.live_url`) MUST be filled by some skill in the pipeline before the reviewer runs. If after a skill returns `success=true` the relevant key is **not** in skill stdout, that's a skill bug — log it in `T.contributions[<role>].skill_output_missing_locator: true` and DO NOT increment `current_step_index`; the next pulse can retry or the operator can mark the card killed with `kill_reason="skill_did_not_produce_locator"`.
+
+Examples of skill-named roles already in `/factory/skills/`: `publish-website-page` (real, returns `live_url`), `post-twitter` (mock, returns `tweet_id` + `feed_path`), `send-email` (mock, returns `email_id`).
 
 #### C3. Inline content-generation role
 
