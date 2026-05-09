@@ -65,7 +65,15 @@ reset_factory() {
 install_creds() {
     # Both post-twitter-real and grant-access read /factory/secrets/<resource_id
     # with / replaced by ->.json — social/twitter → social-twitter.json.
-    local body='{"schema_version":"1","api_key":"k","api_key_secret":"ks","access_token":"t","access_token_secret":"ts"}'
+    # Default test creds use OAuth 2.0 (matches prod). Override with
+    # CRED_FLAVOR=oauth1 to install legacy creds for the OAuth 1.0a path.
+    local flavor="${CRED_FLAVOR:-oauth2}"
+    local body
+    if [ "$flavor" = "oauth2" ]; then
+        body='{"schema_version":"1","auth_flow":"oauth2","client_id":"ci","client_secret":"cs","access_token":"at","refresh_token":"rt"}'
+    else
+        body='{"schema_version":"1","auth_flow":"oauth1","api_key":"k","api_key_secret":"ks","access_token":"t","access_token_secret":"ts"}'
+    fi
     printf '%s\n' "$body" > "$FACTORY_ROOT/secrets/social-twitter.json"
     chmod 600 "$FACTORY_ROOT/secrets/social-twitter.json"
 }

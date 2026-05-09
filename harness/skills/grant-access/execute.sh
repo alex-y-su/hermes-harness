@@ -39,8 +39,11 @@ dry_run = os.environ.get("DRY_RUN", "")
 
 request_path = os.path.join(factory_root, "access-requests", f"{request_id}.json")
 
-REQUIRED_KEYS = {
-    "social/twitter": ("api_key", "api_key_secret", "access_token", "access_token_secret"),
+REQUIRED_KEYS_BY_FLOW = {
+    "social/twitter": {
+        "oauth2": ("client_id", "client_secret", "access_token", "refresh_token"),
+        "oauth1": ("api_key", "api_key_secret", "access_token", "access_token_secret"),
+    },
 }
 
 def emit(obj):
@@ -85,11 +88,15 @@ try:
 except Exception as e:
     emit({"success": False, "error": "creds_invalid", "detail": f"secrets file invalid json: {e}"})
 
-required = REQUIRED_KEYS.get(resource_id)
-if required is not None:
+flow_keys = REQUIRED_KEYS_BY_FLOW.get(resource_id)
+if flow_keys is not None:
+    auth_flow = creds.get("auth_flow") or "oauth1"
+    required = flow_keys.get(auth_flow)
+    if required is None:
+        emit({"success": False, "error": "creds_invalid", "detail": f"unknown auth_flow {auth_flow!r}; expected one of {sorted(flow_keys)}"})
     missing = [k for k in required if not creds.get(k)]
     if missing:
-        emit({"success": False, "error": "creds_invalid", "detail": f"missing required keys: {','.join(missing)}"})
+        emit({"success": False, "error": "creds_invalid", "detail": f"missing required keys for {auth_flow}: {','.join(missing)}"})
 
 # Mark request granted.
 request["status"] = "granted"
