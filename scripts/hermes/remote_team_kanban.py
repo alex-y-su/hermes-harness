@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from hermes_harness.remote_team.quality import enforce_response_quality
+
 
 TEAM_PREFIX = "team:"
 DEFAULT_ACTIVE_CYCLE_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -70,6 +72,7 @@ def dispatch_team_task(
             "status": "blocked",
         }
 
+    response = enforce_response_quality(response, task_body=claimed.body or "")
     main_update = _main_update(response)
     action = str(main_update.get("action") or _default_action(response))
     result_payload = _result_payload(response)
