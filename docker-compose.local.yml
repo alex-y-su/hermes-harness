@@ -1,0 +1,50 @@
+services:
+  local-vm:
+    build:
+      context: .
+      dockerfile: docker/local-vm/Dockerfile
+      target: base
+    image: hermes-harness-local-vm:latest
+    environment:
+      HERMES_HOME: /vm/hermes-home
+      HERMES_INSTALL_DIR: /usr/local/lib/hermes-agent
+      FACTORY_DIR: /vm/factory
+    volumes:
+      - .:/workspace
+      - hermes_harness_vm_factory:/vm/factory
+      - hermes_harness_vm_home:/vm/hermes-home
+    working_dir: /workspace
+    tty: true
+
+  dashboard:
+    image: hermes-harness-local-vm:latest
+    build:
+      context: .
+      dockerfile: docker/local-vm/Dockerfile
+      target: dashboard
+    environment:
+      HERMES_HOME: /vm/hermes-home
+      HERMES_INSTALL_DIR: /usr/local/lib/hermes-agent
+      FACTORY_DIR: /vm/factory
+      HERMES_DASHBOARD_TUI: "1"
+    volumes:
+      - .:/workspace
+      - hermes_harness_vm_factory:/vm/factory
+      - hermes_harness_vm_home:/vm/hermes-home
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:9119:9119"
+    command:
+      - hermes
+      - dashboard
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9119"
+      - --no-open
+      - --insecure
+      - --tui
+
+volumes:
+  hermes_harness_vm_factory:
+  hermes_harness_vm_home:

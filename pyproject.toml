@@ -1,64 +1,25 @@
 [build-system]
-requires = ["hatchling>=1.25"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-harness"
+name = "hermes-harness-reset"
 version = "0.1.0"
-description = "Python harness scaffold for Hermes remote-team substrates and tools"
-readme = "docs/hermes-harness-a2a-e2b-plugin-spec.md"
+description = "Hermes-first reset of Hermes Harness."
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
 dependencies = []
 
 [project.optional-dependencies]
-e2b = ["e2b>=1.0", "e2b-code-interpreter>=1.0"]
-test = ["pytest>=8.0"]
+dev = [
+  "pytest>=8",
+]
 
 [project.scripts]
-harness-a2a-bridge = "harness.bridge.cli:main"
-harness-remote-supervisor = "harness_remote.cli:main"
-harness-spawn-team = "harness.tools.spawn_team:main"
-harness-run-assignment-sandbox = "harness.tools.run_assignment_sandbox:main"
-harness-finalize-assignment-sandbox = "harness.tools.finalize_assignment_sandbox:main"
-harness-dispatch-team = "harness.tools.dispatch_team:main"
-harness-sunset-team = "harness.tools.sunset_team:main"
-harness-query-remote-teams = "harness.tools.query_remote_teams:main"
-harness-query-user-requests = "harness.tools.query_user_requests:main"
-harness-resolve-user-request = "harness.tools.resolve_user_request:main"
-harness-orchestrator = "harness.tools.orchestrator:main"
-harness-e2b-watchdog = "harness.tools.orchestrator:main"
-harness-run-soak = "harness.tools.run_soak:main"
-harness-query-alerts = "harness.tools.query_alerts:main"
-harness-ack-alert = "harness.tools.ack_alert:main"
-harness-query-work-board = "harness.tools.query_work_board:main"
-harness-requeue-assignment = "harness.tools.requeue_assignment:main"
-harness-cancel-assignment = "harness.tools.cancel_assignment:main"
-harness-archive-stale-team = "harness.tools.archive_stale_team:main"
-harness-explain-blockers = "harness.tools.explain_blockers:main"
-harness-resource-gate = "harness.tools.resource_gate:main"
-harness-resource-actions = "harness.tools.resource_actions:main"
-harness-inspect-team = "harness.tools.inspect_team:main"
-harness-escalate = "harness.tools.escalate:main"
-harness-hub-viewer = "harness.viewer.server:main"
-harness-boss-team = "harness.tools.boss_team:main"
-harness-hermes-a2a-server = "harness.tools.hermes_a2a_server:main"
-harness-notify-user = "harness.tools.notify_user:main"
-harness-message-peer = "harness.tools.message_peer:main"
-harness-list-peers = "harness.tools.list_peers:main"
-harness-control = "harness.tools.control:main"
+hermes-harness = "hermes_harness.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hermes_harness*"]
+exclude = ["archive*", "docker*", "plans*", "tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
-
-[tool.hatch.build.targets.wheel]
-packages = ["harness", "harness_remote"]
-include = [
-  "schema/sqlite.sql",
-  "templates/**",
-  "e2b-templates/**",
-]
-
-[tool.hatch.build.targets.sdist]
-include = ["harness", "harness_remote", "schema", "templates", "e2b-templates", "tests", "docs", "pyproject.toml"]
