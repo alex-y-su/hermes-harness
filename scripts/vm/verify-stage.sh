@@ -71,6 +71,7 @@ PY
           jq -e "((.task.result | fromjson).requested_kpis | length) > 0" /tmp/mock-kanban-show.json
           jq -e "((.task.result | fromjson).reported_kpis | length) > 0" /tmp/mock-kanban-show.json
           jq -e "(.task.result | fromjson).approval.tier" /tmp/mock-kanban-show.json
+          jq -e "(.task.result | fromjson).main_card_update.action == \"complete\"" /tmp/mock-kanban-show.json
           jq -e "(.task.result | fromjson).test_telemetry.confidence" /tmp/mock-kanban-show.json
           test -f /vm/hermes-home/mock-remote-kanban/stage1-mock-remote/seo/board.json
           jq -e ".tasks[\"$task_id\"].source_board == \"stage1-mock-remote\"" \

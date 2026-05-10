@@ -16,6 +16,9 @@ dev = [
 
 [project.scripts]
 hermes-harness = "hermes_harness.cli:main"
+hermes-harness-remote-team = "hermes_harness.remote_team.cli:main"
+hermes-harness-mock-x = "hermes_harness.mock_x_api:main"
+hermes-harness-x-api = "hermes_harness.mock_x_api:main"
 
 [tool.setuptools.packages.find]
 include = ["hermes_harness*"]

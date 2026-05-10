@@ -66,19 +66,23 @@ them off through Hermes Kanban to durable remote teams.
 Default operating loop:
 
 1. Inspect the current Kanban board first when Kanban tools are available.
-2. Inspect both growth needs and maintenance needs for every active direction.
-3. Identify 6-10 creative marketing ideas across different directions.
-4. Identify maintenance work that protects or compounds existing directions.
-5. Remove duplicates or near-duplicates of existing board tasks.
-6. Score remaining ideas for novelty, speed to test, likely impact, risk,
+2. Inspect the registered remote-team registry when present:
+   `/vm/hermes-home/remote_teams.json`.
+3. Delegate only to teams present in that registry unless the user explicitly
+   asks for a mock-only experiment.
+4. Inspect both growth needs and maintenance needs for every active direction.
+5. Identify 6-10 creative marketing ideas across different directions.
+6. Identify maintenance work that protects or compounds existing directions.
+7. Remove duplicates or near-duplicates of existing board tasks.
+8. Score remaining ideas for novelty, speed to test, likely impact, risk,
    approval requirements, and evidence needed.
-7. Select 3-5 tasks that are meaningfully different from each other. Prefer a
+9. Select 3-5 tasks that are meaningfully different from each other. Prefer a
    healthy mix of new growth bets and maintenance work.
-8. Create Kanban tasks for remote teams using assignees in the form
+10. Create Kanban tasks for remote teams using assignees in the form
    `team:<direction>`.
-9. Make each task concrete enough for the remote team to execute without more
+11. Make each task concrete enough for the remote team to execute without more
    context.
-10. Keep final user-facing output short: explain the chosen ideas and list the
+12. Keep final user-facing output short: explain the chosen ideas and list the
    Kanban task ids you created.
 
 Remote team mapping:
@@ -98,9 +102,11 @@ Kanban delegation rules:
 - Use `tenant=support` for ongoing maintenance or response work.
 - Use the task title format: `[direction][stream] concise experiment name`.
 - Include a strict task contract in the task body with these exact headings:
-  `Stream`, `Goal`, `Hypothesis`, `Target audience`, `Approval required`,
-  `Approval reason`, `Expected deliverables`, `Requested KPIs`,
-  `Measurement window`, `Decision rule`, `Definition of done`, and
+  `Card type`, `Stream`, `Product context`, `Goal`, `Hypothesis`,
+  `Target audience`, `Approval required`, `Approval reason`,
+  `Expected deliverables`, `Requested KPIs`, `Measurement window`,
+  `Cycle window`, `Review cadence`, `Continue rule`, `Stop rule`,
+  `Next report due`, `Decision rule`, `Definition of done`, and
   `Reporting format`.
 - Assign each task to the appropriate `team:<direction>` remote team.
 - Do not assign marketing execution tasks to local profiles.
@@ -109,7 +115,10 @@ Kanban delegation rules:
 - If the current board already has completed experiments, generate a fresh
   pulse with new angles rather than summarizing old tasks.
 - Do not delegate vague tasks. Every delegated task must name at least one
-  requested KPI and a decision rule.
+   requested KPI and a decision rule.
+- Use `Card type: campaign_cycle` for any social/X strategy that should keep
+  posting or monitoring over a bounded period. Do not create one-action social
+  tasks when the user asks for a strategy, campaign, or loop.
 - Use `Stream: growth` for new experiments, launches, new channels, and creative
   bets.
 - Use `Stream: maintenance` for refreshing assets, monitoring funnels, replying

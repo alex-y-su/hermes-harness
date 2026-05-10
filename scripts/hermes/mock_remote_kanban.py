@@ -26,6 +26,7 @@ from typing import Any
 
 TEAM_PREFIX = "team:"
 DEFAULT_SUCCESS_RATE = 0.75
+DEFAULT_ACTIVE_CYCLE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def is_team_assignee(assignee: str | None) -> bool:
@@ -78,27 +79,34 @@ def dispatch_team_task(
             status="success",
             rng=rng,
         )
+        main_update = result["main_card_update"]
         summary = (
-            f"Mock remote team {team} completed {claimed.id}: "
+            f"Mock remote team {team} reported {claimed.id}: "
             f"stream={result['stream']}, "
+            f"card_type={result['card_type']}, "
+            f"main_action={main_update['action']}, "
             f"kpis={len(result['reported_kpis'])}, "
             f"confidence={result['test_telemetry']['confidence']}."
         )
+        remote_status = "running" if main_update["action"] == "keep_running" else "completed"
         remote_task.update(
             {
-                "status": "completed",
+                "status": remote_status,
                 "result": result,
-                "completed_at": now,
+                "completed_at": now if remote_status == "completed" else None,
                 "updated_at": now,
             }
         )
-        ok = kb.complete_task(
-            conn,
-            claimed.id,
-            result=json.dumps(result, sort_keys=True),
-            summary=summary,
-            metadata=result,
-        )
+        if main_update["action"] == "keep_running":
+            ok = _record_running_report(kb, conn, claimed, result, summary)
+        else:
+            ok = kb.complete_task(
+                conn,
+                claimed.id,
+                result=json.dumps(result, sort_keys=True),
+                summary=summary,
+                metadata=result,
+            )
         if ok:
             kb.add_comment(conn, claimed.id, "mock-remote-kanban", summary)
     else:
@@ -141,6 +149,64 @@ def dispatch_team_task(
         "remote_task_id": remote_task["remote_task_id"],
         "status": remote_task["status"],
     }
+
+
+def _record_running_report(
+    kb: Any,
+    conn: Any,
+    task: Any,
+    result: dict[str, Any],
+    summary: str,
+) -> bool:
+    """Keep an active main card running while storing the latest remote report."""
+    result_json = json.dumps(result, sort_keys=True)
+    ttl = _active_cycle_ttl_seconds()
+    lock = getattr(task, "claim_lock", None)
+    if lock:
+        kb.heartbeat_claim(conn, task.id, ttl_seconds=ttl, claimer=lock)
+    now = _now()
+    with kb.write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET result = ?,
+                   claim_expires = CASE
+                       WHEN claim_lock IS NULL THEN claim_expires
+                       ELSE ?
+                   END
+             WHERE id = ?
+               AND status = 'running'
+            """,
+            (result_json, now + ttl, task.id),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = getattr(task, "current_run_id", None)
+        if run_id is not None:
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET summary = ?,
+                       metadata = ?,
+                       claim_expires = ?
+                 WHERE id = ?
+                   AND ended_at IS NULL
+                """,
+                (summary, json.dumps(result, ensure_ascii=False), now + ttl, int(run_id)),
+            )
+        kb._append_event(
+            conn,
+            task.id,
+            "remote_status_report",
+            {
+                "remote_team": result["team"],
+                "remote_task_id": result["remote_task_id"],
+                "main_card_update": result["main_card_update"],
+                "summary": summary,
+            },
+            run_id=run_id,
+        )
+    return True
 
 
 def _remote_task(remote_board: dict[str, Any], task: Any, team: str, board: str) -> dict[str, Any]:
@@ -189,6 +255,7 @@ def _build_result(
     body = task.body or ""
     sections = _sections(body)
     stream = _stream(task, sections)
+    card_type = _card_type(sections, stream)
     requested_kpis = _requested_kpis(team, stream, sections)
     deliverables = _deliverables(team, stream, sections)
     measurement_window = _section_value(
@@ -203,8 +270,22 @@ def _build_result(
         "ship/kill rule",
         "stop/ship thresholds",
     ) or _default_decision_rule(stream)
+    cycle_window = _section_value(sections, "cycle window") or ""
+    review_cadence = _section_value(sections, "review cadence") or _default_review_cadence(card_type)
+    continue_rule = _section_value(sections, "continue rule") or decision_rule
+    stop_rule = _section_value(sections, "stop rule") or ""
+    next_report_due_at = _section_value(sections, "next report due at", "next report due") or ""
     approval = _approval(body, stream, sections)
     telemetry = _numbers(rng)
+    main_update = _main_card_update(
+        card_type=card_type,
+        status=status,
+        cycle_window=cycle_window,
+        review_cadence=review_cadence,
+        continue_rule=continue_rule,
+        stop_rule=stop_rule,
+        next_report_due_at=next_report_due_at,
+    )
 
     reported_kpis = [
         _reported_kpi(kpi, index, measurement_window, rng)
@@ -220,16 +301,23 @@ def _build_result(
         "remote_task_id": remote_task_id,
         "external_id": task.id,
         "status": status,
+        "card_type": card_type,
         "stream": stream,
         "approval": approval,
         "completed_deliverables": completed_deliverables,
         "requested_kpis": requested_kpis,
         "reported_kpis": reported_kpis,
         "measurement_window": measurement_window,
+        "cycle_window": cycle_window,
+        "review_cadence": review_cadence,
+        "continue_rule": continue_rule,
+        "stop_rule": stop_rule,
+        "next_report_due_at": next_report_due_at,
         "decision_rule": decision_rule,
+        "main_card_update": main_update,
         "evidence": _evidence(team, stream, deliverables),
         "blockers": [],
-        "next_recommendation": _next_recommendation(status, stream, approval),
+        "next_recommendation": _next_recommendation(status, stream, approval, main_update),
         "test_telemetry": telemetry,
     }
     if stream == "maintenance":
@@ -250,6 +338,7 @@ def _sections(body: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: str | None = None
     known_headings = {
+        "card type",
         "stream",
         "goal",
         "hypothesis",
@@ -267,6 +356,12 @@ def _sections(body: str) -> dict[str, str]:
         "measurement window",
         "measurement",
         "test window",
+        "cycle window",
+        "review cadence",
+        "continue rule",
+        "stop rule",
+        "next report due",
+        "next report due at",
         "decision rule",
         "ship/kill rule",
         "stop/ship thresholds",
@@ -275,14 +370,15 @@ def _sections(body: str) -> dict[str, str]:
     }
     for raw_line in body.splitlines():
         line = raw_line.rstrip()
-        match = re.match(r"^\s*(?:[-*]\s*)?([A-Za-z][A-Za-z0-9 /_-]{1,60}):\s*(.*)$", line)
+        heading_line = re.sub(r"^\s*#{1,6}\s*", "", line)
+        match = re.match(r"^\s*(?:[-*]\s*)?([A-Za-z][A-Za-z0-9 /_-]{1,60}):\s*(.*)$", heading_line)
         if match:
             current = _norm_key(match.group(1))
             sections.setdefault(current, [])
             if match.group(2):
                 sections[current].append(match.group(2).strip())
             continue
-        heading = _norm_key(line)
+        heading = _norm_key(heading_line)
         if heading in known_headings:
             current = heading
             sections.setdefault(current, [])
@@ -334,6 +430,30 @@ def _stream(task: Any, sections: dict[str, str]) -> str:
     if any(word in body for word in ("maintenance", "refresh", "monitor", "repair", "follow-up", "follow up", "upkeep")):
         return "maintenance"
     return "growth"
+
+
+def _card_type(sections: dict[str, str], stream: str) -> str:
+    explicit = _section_value(sections, "card type")
+    normalized = _norm_key(explicit or "").replace(" ", "_").replace("-", "_")
+    aliases = {
+        "campaign": "campaign_cycle",
+        "campaign_cycle": "campaign_cycle",
+        "growth_cycle": "campaign_cycle",
+        "support": "support_cycle",
+        "support_cycle": "support_cycle",
+        "maintenance_cycle": "support_cycle",
+        "direction": "direction",
+        "kpi": "kpi_review",
+        "kpi_review": "kpi_review",
+        "approval": "approval",
+        "execution": "execution",
+        "task": "execution",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized == "cycle" and stream == "maintenance":
+        return "support_cycle"
+    return "execution"
 
 
 def _requested_kpis(team: str, stream: str, sections: dict[str, str]) -> list[str]:
@@ -463,9 +583,102 @@ def _evidence(team: str, stream: str, deliverables: list[str]) -> list[str]:
     return evidence
 
 
-def _next_recommendation(status: str, stream: str, approval: dict[str, Any]) -> str:
+def _default_review_cadence(card_type: str) -> str:
+    if card_type == "campaign_cycle":
+        return "daily status report; full review at the end of the cycle"
+    if card_type == "support_cycle":
+        return "daily support report; weekly maintenance review"
+    if card_type == "direction":
+        return "weekly direction review"
+    return ""
+
+
+def _main_card_update(
+    *,
+    card_type: str,
+    status: str,
+    cycle_window: str,
+    review_cadence: str,
+    continue_rule: str,
+    stop_rule: str,
+    next_report_due_at: str,
+) -> dict[str, Any]:
+    action = _main_card_action(card_type, status=status)
+    return {
+        "action": action,
+        "status": _main_card_status(action),
+        "card_type": card_type,
+        "remote_status": "blocked" if status != "success" else "reported",
+        "business_phase": _business_phase(card_type, action),
+        "kpi_state": _kpi_state(card_type, action),
+        "cycle_window": cycle_window,
+        "review_cadence": review_cadence,
+        "next_report_due_at": next_report_due_at,
+        "continue_rule": continue_rule,
+        "stop_rule": stop_rule,
+        "reason": _main_card_reason(card_type, action=action, status=status),
+    }
+
+
+def _main_card_action(card_type: str, *, status: str) -> str:
+    if status != "success":
+        return "block"
+    if card_type in {"campaign_cycle", "support_cycle", "direction"}:
+        return "keep_running"
+    return "complete"
+
+
+def _main_card_status(action: str) -> str:
+    return {
+        "block": "blocked",
+        "keep_running": "running",
+        "complete": "done",
+    }.get(action, "running")
+
+
+def _business_phase(card_type: str, action: str) -> str:
+    if action == "block":
+        return "blocked"
+    if action == "complete":
+        return "completed"
+    if card_type == "support_cycle":
+        return "support_active"
+    if card_type == "direction":
+        return "direction_active"
+    return "campaign_active"
+
+
+def _kpi_state(card_type: str, action: str) -> str:
+    if action == "block":
+        return "blocked"
+    if action == "complete":
+        return "reported"
+    if card_type in {"campaign_cycle", "support_cycle", "direction"}:
+        return "collecting"
+    return "ready_to_measure"
+
+
+def _main_card_reason(card_type: str, *, action: str, status: str) -> str:
+    if action == "block":
+        return f"Remote team returned {status}."
+    if action == "keep_running":
+        return (
+            f"{card_type} is an active cycle; keep the main card running "
+            "until the cycle window, stop rule, continue rule, or a blocker resolves it."
+        )
+    return "Remote task satisfied the card's finite Definition of Done."
+
+
+def _next_recommendation(
+    status: str,
+    stream: str,
+    approval: dict[str, Any],
+    main_update: dict[str, Any],
+) -> str:
     if status != "success":
         return "Revise the task contract, reduce scope, and retry with clearer KPI requirements."
+    if main_update["action"] == "keep_running":
+        return "Keep the main card running and continue KPI/support reporting on the configured cadence."
     if approval["required_before_external_action"]:
         return "Request human approval before publishing, spending, outreach, or credentialed execution."
     if stream == "maintenance":
@@ -569,6 +782,17 @@ def _success_rate() -> float:
         return max(0.0, min(1.0, float(raw)))
     except ValueError:
         return DEFAULT_SUCCESS_RATE
+
+
+def _active_cycle_ttl_seconds() -> int:
+    raw = os.environ.get(
+        "HERMES_MOCK_KANBAN_ACTIVE_TTL_SECONDS",
+        str(DEFAULT_ACTIVE_CYCLE_TTL_SECONDS),
+    )
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return DEFAULT_ACTIVE_CYCLE_TTL_SECONDS
 
 
 def _now() -> int:

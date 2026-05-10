@@ -45,6 +45,30 @@ services:
       - --insecure
       - --tui
 
+  x-team:
+    image: hermes-harness-local-vm:latest
+    build:
+      context: .
+      dockerfile: docker/local-vm/Dockerfile
+      target: base
+    container_name: hermes-team-x
+    environment:
+      HERMES_HOME: /vm/x-team-home
+      HERMES_INSTALL_DIR: /usr/local/lib/hermes-agent
+      FACTORY_DIR: /vm/factory
+      HERMES_REMOTE_TEAM_EXECUTION_MODE: hermes
+      HERMES_REMOTE_TEAM_PROFILE: xworker
+      HERMES_REMOTE_TEAM_WAIT_SECONDS: "420"
+    volumes:
+      - .:/workspace
+      - hermes_harness_vm_factory:/vm/factory
+      - hermes_x_team_home:/vm/x-team-home
+    working_dir: /workspace
+    command:
+      - sleep
+      - infinity
+
 volumes:
   hermes_harness_vm_factory:
   hermes_harness_vm_home:
+  hermes_x_team_home:

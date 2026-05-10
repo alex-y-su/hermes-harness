@@ -43,6 +43,9 @@ Decision rule: Continue if organic visits improve 10% without CTA regression.
     )
 
     assert result["stream"] == "maintenance"
+    assert result["card_type"] == "execution"
+    assert result["main_card_update"]["action"] == "complete"
+    assert result["main_card_update"]["status"] == "done"
     assert result["approval"]["required_before_external_action"] is False
     assert result["requested_kpis"] == [
         "qualified organic visits",
@@ -92,6 +95,8 @@ Iterate if profile-click rate is >=1.5%.
     )
 
     assert result["stream"] == "growth"
+    assert result["card_type"] == "execution"
+    assert result["main_card_update"]["action"] == "complete"
     assert result["approval"]["tier"] == "human"
     assert result["requested_kpis"] == [
         "Draft quality score",
@@ -101,3 +106,70 @@ Iterate if profile-click rate is >=1.5%.
     assert result["reported_kpis"][1]["name"] == "profile clicks"
     assert result["measurement_window"] == "72 hours after posting"
     assert result["decision_rule"] == "Iterate if profile-click rate is >=1.5%."
+
+
+def test_mock_result_keeps_campaign_cycle_running():
+    mock = load_mock_module()
+    task = SimpleNamespace(
+        id="t_campaign_cycle",
+        body="""Card type
+Campaign cycle
+
+Stream
+Growth
+
+Goal
+Run the social posting strategy for one bounded cycle.
+
+Requested KPIs
+Qualified replies; Profile clicks
+
+Cycle window
+2026-05-10..2026-05-24
+
+Review cadence
+Daily KPI update, full review every 7 days.
+
+Continue rule
+Continue if >=5 qualified replies.
+
+Stop rule
+Stop if 10 posts produce 0 qualified replies.
+
+Next report due
+2026-05-11T09:00:00Z
+""",
+        tenant="growth",
+    )
+
+    result = mock._build_result(
+        task=task,
+        team="social",
+        remote_task_id="social:mock:1",
+        status="success",
+        rng=random.Random("campaign-cycle-test"),
+    )
+
+    assert result["card_type"] == "campaign_cycle"
+    assert result["cycle_window"] == "2026-05-10..2026-05-24"
+    assert result["review_cadence"] == "Daily KPI update, full review every 7 days."
+    assert result["continue_rule"] == "Continue if >=5 qualified replies."
+    assert result["stop_rule"] == "Stop if 10 posts produce 0 qualified replies."
+    assert result["next_report_due_at"] == "2026-05-11T09:00:00Z"
+    assert result["main_card_update"] == {
+        "action": "keep_running",
+        "business_phase": "campaign_active",
+        "card_type": "campaign_cycle",
+        "continue_rule": "Continue if >=5 qualified replies.",
+        "cycle_window": "2026-05-10..2026-05-24",
+        "kpi_state": "collecting",
+        "next_report_due_at": "2026-05-11T09:00:00Z",
+        "reason": (
+            "campaign_cycle is an active cycle; keep the main card running "
+            "until the cycle window, stop rule, continue rule, or a blocker resolves it."
+        ),
+        "remote_status": "reported",
+        "review_cadence": "Daily KPI update, full review every 7 days.",
+        "status": "running",
+        "stop_rule": "Stop if 10 posts produce 0 qualified replies.",
+    }
