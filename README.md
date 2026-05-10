@@ -19,7 +19,43 @@ explicitly and verifies it in the local Docker VM.
 The Docker VM patches Hermes' real Kanban dispatcher with a mock remote-team
 implementation. Tasks assigned to `team:<name>` are not spawned as local Hermes
 profiles. They are claimed by the dispatcher, recorded under a mock remote-team
-board, and resolved with random success/failure metrics.
+board, and resolved with a structured mock report.
+
+The mock report is intentionally Kanban-compatible: Hermes still creates a
+normal task with title/body/assignee/tenant, and the remote team writes the
+answer into the normal task result. The stricter contract lives inside the task
+body and result payload.
+
+Delegated task bodies should include:
+
+- `Stream`: `growth` or `maintenance`
+- `Goal`
+- `Hypothesis`
+- `Target audience`
+- `Approval required`
+- `Approval reason`
+- `Expected deliverables`
+- `Requested KPIs`
+- `Measurement window`
+- `Decision rule`
+- `Definition of done`
+- `Reporting format`
+
+Remote-team results include:
+
+- completed deliverables
+- requested KPIs
+- reported KPIs
+- approval posture
+- evidence
+- blockers
+- next recommendation
+- measurement window
+- decision rule
+- mock-only test telemetry
+
+Random values are now reported under `test_telemetry`; they prove the playground
+flow works but are not business KPIs.
 
 Example:
 
@@ -47,7 +83,7 @@ Control knobs:
 
 - `HERMES_MOCK_KANBAN_SUCCESS_RATE=1` forces success.
 - `HERMES_MOCK_KANBAN_SUCCESS_RATE=0` forces failure.
-- `HERMES_MOCK_KANBAN_SEED=<value>` makes random metrics repeatable.
+- `HERMES_MOCK_KANBAN_SEED=<value>` makes mock test telemetry repeatable.
 
 ## Fresh Docker VM Check
 

@@ -67,8 +67,15 @@ PY
           jq -e ".task.assignee == \"team:seo\"" /tmp/mock-kanban-show.json
           jq -e "(.task.result | fromjson).mock_remote == true" /tmp/mock-kanban-show.json
           jq -e "(.task.result | fromjson).team == \"seo\"" /tmp/mock-kanban-show.json
+          jq -e "(.task.result | fromjson).stream == \"growth\"" /tmp/mock-kanban-show.json
+          jq -e "((.task.result | fromjson).requested_kpis | length) > 0" /tmp/mock-kanban-show.json
+          jq -e "((.task.result | fromjson).reported_kpis | length) > 0" /tmp/mock-kanban-show.json
+          jq -e "(.task.result | fromjson).approval.tier" /tmp/mock-kanban-show.json
+          jq -e "(.task.result | fromjson).test_telemetry.confidence" /tmp/mock-kanban-show.json
           test -f /vm/hermes-home/mock-remote-kanban/stage1-mock-remote/seo/board.json
           jq -e ".tasks[\"$task_id\"].source_board == \"stage1-mock-remote\"" \
+            /vm/hermes-home/mock-remote-kanban/stage1-mock-remote/seo/board.json
+          jq -e ".tasks[\"$task_id\"].result.reported_kpis | length > 0" \
             /vm/hermes-home/mock-remote-kanban/stage1-mock-remote/seo/board.json
         '"'"'
       pytest -q

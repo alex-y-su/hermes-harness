@@ -1,6 +1,7 @@
 # Remote Kanban Teams Plan
 
-Status: proposed architecture; mock local dispatcher implemented for Docker VM.
+Status: proposed architecture; mock local dispatcher implemented for Docker VM;
+KPI-aware growth/maintenance result contract implemented for the mock.
 
 Related plan: `plans/hermes-first-reset.md`.
 
@@ -81,6 +82,17 @@ Each team tracks both support and growth work. Start with one board per team and
 use task metadata such as `tenant=growth` or `tenant=support`. Split into
 separate boards later only when volume or operational needs justify it.
 
+Each direction owns two kinds of work:
+
+- growth: new experiments, channels, campaigns, creative bets, activation loops
+- maintenance: refreshing existing assets, checking broken funnels, replying to
+  leads/comments, monitoring performance, pruning stale work, and keeping
+  operating assets current
+
+The main team controls the growth/maintenance budget split. Remote teams own the
+day-to-day queues and report only summarized results, blockers, and decisions
+back to the main board.
+
 ## Kanban Changes
 
 ### Current Mock Implementation
@@ -99,9 +111,107 @@ Behavior:
 <HERMES_KANBAN_HOME>/mock-remote-kanban/<board>/<team>/board.json
 ```
 
-- Success marks the main Kanban task `done` with JSON result metrics.
+- Success marks the main Kanban task `done` with a structured JSON result.
 - Failure marks the main Kanban task `blocked` and writes the failure payload as
   a comment.
+
+The mock result currently includes:
+
+```json
+{
+  "mock_remote": true,
+  "team": "seo",
+  "stream": "growth",
+  "approval": {
+    "required_before_external_action": false,
+    "tier": "profile"
+  },
+  "completed_deliverables": ["Prepared content brief"],
+  "requested_kpis": ["qualified organic visits"],
+  "reported_kpis": [
+    {
+      "name": "qualified organic visits",
+      "measurement_window": "7 days after launch",
+      "mock_baseline": 12,
+      "mock_target": 94,
+      "status": "ready_to_measure"
+    }
+  ],
+  "measurement_window": "7 days after launch",
+  "decision_rule": "Continue if the primary KPI beats baseline without violating guardrails.",
+  "evidence": ["mock remote seo board entry"],
+  "blockers": [],
+  "next_recommendation": "Review the KPI contract, then approve execution or promote the best deliverable to launch.",
+  "test_telemetry": {
+    "confidence": 0.81,
+    "readiness_score": 77,
+    "risk_score": 42,
+    "simulated_effort": 30,
+    "simulated_impact": 225
+  }
+}
+```
+
+`test_telemetry` is only a local playground signal. It must not be treated as a
+real marketing KPI.
+
+## Approval Model
+
+Approval should stay inside the Kanban workflow first. Do not introduce a
+separate approval service until the task/result contract proves stable.
+
+Approval tiers:
+
+- automatic: research, drafts, plans, mock execution, internal analysis, and
+  maintenance checks with no external side effects
+- profile: low-risk non-public assets, draft landing pages, proposed outreach
+  copy, and experiment specs below a cost/time threshold
+- human: posting publicly, sending emails or DMs, paid ads, partner outreach,
+  spending money, using credentials, using customer data, or changing production
+  systems
+
+Approval gates external-world action, not thinking. A remote team can still
+produce a draft, plan, or execution packet before approval. Launch/send/publish
+must be blocked until the approval tier allows it.
+
+## Delegation Contract
+
+Use the existing Hermes Kanban interface. Richer structure goes into the task
+body and result payload.
+
+Required task body headings:
+
+```text
+Stream:
+Goal:
+Hypothesis:
+Target audience:
+Approval required:
+Approval reason:
+Expected deliverables:
+Requested KPIs:
+Measurement window:
+Decision rule:
+Definition of done:
+Reporting format:
+```
+
+Required remote result fields:
+
+```text
+completed_deliverables
+requested_kpis
+reported_kpis
+approval
+measurement_window
+decision_rule
+evidence
+blockers
+next_recommendation
+```
+
+The main team should reject or rework results that do not answer the requested
+KPIs, do not preserve approval posture, or do not include a clear decision rule.
 
 The mock is installed by:
 
