@@ -465,6 +465,8 @@ def _scheduled_poll_prompt(payload: dict[str, Any]) -> str:
         "Inspect the tenant's internal Kanban work and maintenance state for this external_id. "
         "Execute any due work that is inside the active strategy/time window, including due KPI checks "
         "and due X/social posts when the strategy calls for them. Then return a fresh status report. "
+        "For creative/channel work, keep owning the creative strategy instead of waiting for the main team "
+        "to specify individual actions. Translate source material into audience-facing work before publishing. "
         "Keep main_card_update.action='keep_running' while the cycle should continue; use 'block' for "
         "problems needing main-team attention and 'complete' only when the stop/end condition is satisfied. "
         "Your report must be cumulative: include prior strategy decisions, the execution ledger to date, "
@@ -476,6 +478,7 @@ def _remote_kanban_operating_prompt() -> str:
     return """Default remote-Kanban operating rules:
 - Treat the delegated request as a main-team Kanban card packet. Preserve external_id, source_board, source_task_id, target_team, board, requested KPIs, cycle window, review cadence, continue rule, stop rule, and next report due.
 - The main team delegates outcomes, not a script. Own the strategy and execution. Choose a serious cadence, explain why, and do not optimize for the smallest output that might pass.
+- If the work is creative, translate the delegated goal into audience-facing strategy. Do not copy internal implementation language just because it appears in context. Use technical terms only when they make the message sharper for the target audience.
 - Create internal Kanban work for execution, KPI verification, blockers, and maintenance. Internal work must reference the originating external_id and source_task_id when available.
 - A strategy/campaign/support cycle is not complete after one action. If the card has a cycle window, review cadence, next report due, or maintenance requirement, create an executable recurring schedule for the tenant to continue the work. Prefer the tenant's native cron/scheduler tool or $HERMES_HOME/cron/jobs.json. If no scheduler can be created, set maintenance_loop.status to blocked and add a blocker explaining that only a plan was created.
 - Campaign reports must include an autonomy contract: strategy_decisions, execution_plan, execution_ledger, self_review, and next_adjustment. The ledger is cumulative across polls and must account for posts, KPI checks, skipped work, blockers, and schedule/heartbeat execution.
