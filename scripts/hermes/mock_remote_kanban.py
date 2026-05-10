@@ -249,6 +249,30 @@ def _build_result(
 def _sections(body: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: str | None = None
+    known_headings = {
+        "stream",
+        "goal",
+        "hypothesis",
+        "target audience",
+        "approval required",
+        "approval reason",
+        "expected deliverables",
+        "expected output",
+        "deliverables",
+        "requested kpis",
+        "kpis",
+        "success metrics",
+        "primary metric",
+        "reporting kpis",
+        "measurement window",
+        "measurement",
+        "test window",
+        "decision rule",
+        "ship/kill rule",
+        "stop/ship thresholds",
+        "definition of done",
+        "reporting format",
+    }
     for raw_line in body.splitlines():
         line = raw_line.rstrip()
         match = re.match(r"^\s*(?:[-*]\s*)?([A-Za-z][A-Za-z0-9 /_-]{1,60}):\s*(.*)$", line)
@@ -257,6 +281,11 @@ def _sections(body: str) -> dict[str, str]:
             sections.setdefault(current, [])
             if match.group(2):
                 sections[current].append(match.group(2).strip())
+            continue
+        heading = _norm_key(line)
+        if heading in known_headings:
+            current = heading
+            sections.setdefault(current, [])
             continue
         if current and line.strip():
             sections[current].append(line.strip())
@@ -369,9 +398,18 @@ def _approval(body: str, stream: str, sections: dict[str, str]) -> dict[str, Any
     explicit_required: bool | None = None
     if explicit is not None:
         explicit_normalized = explicit.strip().lower()
-        if explicit_normalized in {"true", "yes", "required", "human"}:
+        if (
+            explicit_normalized in {"true", "yes", "required", "human"}
+            or "human-approved" in explicit_normalized
+            or "human approval required" in explicit_normalized
+            or explicit_normalized.startswith("human")
+        ):
             explicit_required = True
-        elif explicit_normalized in {"false", "no", "none", "not required"}:
+        elif (
+            explicit_normalized in {"false", "no", "none", "not required"}
+            or explicit_normalized.startswith("auto-approved")
+            or explicit_normalized.startswith("auto approved")
+        ):
             explicit_required = False
     external_action = any(
         phrase in lowered

@@ -23,3 +23,7 @@ exclude = ["archive*", "docker*", "plans*", "tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: requires Docker and the Hermes local VM image",
+  "smoke: requires live model/API access and may be slow or nondeterministic",
+]
